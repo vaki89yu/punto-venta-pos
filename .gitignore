@@ -49,3 +49,7 @@ yarn-error.log*
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Credenciales locales
+.git-credentials
+*.token
