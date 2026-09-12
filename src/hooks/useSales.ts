@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Sale, SaleItem, CartItem, Customer, PaymentMethod } from "@/types";
 import { STORAGE_KEYS } from "@/data/seed";
 import { generateId } from "@/lib/utils";
+import { updateProductInStore } from "@/lib/productStore";
 
 export function useSales() {
   const [sales, setSales] = useState<Sale[]>([]);
@@ -91,6 +92,14 @@ export function useSales() {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+
+    // ─── Descontar stock del inventario global ───
+    // Cada producto vendido reduce su stock y notifica a toda la app.
+    cartItems.forEach((ci) => {
+      updateProductInStore(ci.product.id, {
+        stock: Math.max(0, ci.product.stock - ci.quantity),
+      });
+    });
 
     // Update sale items with the sale ID
     saleItems.forEach((item) => {
