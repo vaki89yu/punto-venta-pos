@@ -55,7 +55,7 @@ if git diff --cached --quiet; then
 fi
 
 git commit -q -m "$MSG"
-git push -q origin main
+git push -q origin main --force-with-lease || git push -q origin main --force
 
 COMMIT=$(git rev-parse --short HEAD)
 
