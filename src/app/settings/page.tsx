@@ -9,6 +9,7 @@ import { Card, CardHeader, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
+import { DatabaseTools } from "@/components/settings/DatabaseTools";
 import { StoreSettings } from "@/types";
 import { STORAGE_KEYS } from "@/data/seed";
 import { Store, Moon, Sun, Monitor, Save, Receipt, Percent, DollarSign } from "lucide-react";
@@ -166,6 +167,8 @@ function SettingsContent() {
             </CardContent>
           </Card>
         </div>
+
+        <DatabaseTools />
 
         <div className="flex justify-end">
           <Button onClick={handleSave} leftIcon={<Save className="w-5 h-5" />}>

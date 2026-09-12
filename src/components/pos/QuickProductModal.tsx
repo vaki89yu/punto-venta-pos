@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { Product, Category, Supplier } from "@/types";
 import { STORAGE_KEYS } from "@/data/seed";
 import { generateSKU } from "@/lib/utils";
+import { findByBarcode } from "@/lib/productStore";
 import { PackagePlus, Barcode, Truck, Tag, DollarSign, Layers, ShoppingCart, Check } from "lucide-react";
 
 interface QuickProductModalProps {
@@ -39,18 +40,24 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
     if (sups) setSuppliers(JSON.parse(sups));
   }, []);
 
+  const [existing, setExisting] = useState<Product | null>(null);
+
   useEffect(() => {
     if (isOpen) {
+      // Verificar si el código ya está registrado
+      const found = barcode ? findByBarcode(barcode) : undefined;
+      setExisting(found || null);
+
       setForm({
-        name: "",
-        sku: generateSKU(),
-        categoryId: "",
-        supplierId: "",
-        brand: "",
-        purchasePrice: "",
-        salePrice: "",
+        name: found?.name || "",
+        sku: found?.sku || generateSKU(),
+        categoryId: found?.categoryId || "",
+        supplierId: found?.supplierId || "",
+        brand: found?.brand || "",
+        purchasePrice: found ? String(found.purchasePrice) : "",
+        salePrice: found ? String(found.salePrice) : "",
         stock: "",
-        minStock: "5",
+        minStock: found ? String(found.minStock) : "5",
       });
     }
   }, [isOpen, barcode]);
@@ -94,14 +101,24 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
     <Modal isOpen={isOpen} onClose={onClose} title="" size="lg" hideCloseButton>
       <div className="-m-6">
         {/* Header */}
-        <div className="bg-gradient-to-r from-emerald-500 to-teal-600 p-5 text-white">
+        <div
+          className={`p-5 text-white bg-gradient-to-r ${
+            existing ? "from-amber-500 to-orange-600" : "from-emerald-500 to-teal-600"
+          }`}
+        >
           <div className="flex items-center gap-3">
             <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
               <PackagePlus className="w-6 h-6" />
             </div>
             <div className="min-w-0">
-              <h2 className="text-lg font-bold">Producto nuevo detectado</h2>
-              <p className="text-emerald-50 text-sm">Registra este producto en tu inventario</p>
+              <h2 className="text-lg font-bold">
+                {existing ? "Este código ya existe" : "Producto nuevo detectado"}
+              </h2>
+              <p className="text-white/85 text-sm">
+                {existing
+                  ? "Se sumará al stock actual en lugar de duplicarse"
+                  : "Registra este producto en tu inventario"}
+              </p>
             </div>
           </div>
           <div className="mt-3 flex items-center gap-2 bg-white/15 rounded-xl px-3 py-2">
@@ -112,6 +129,16 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
 
         {/* Form */}
         <div className="p-5 space-y-4 max-h-[60vh] overflow-y-auto">
+          {existing && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
+              <p className="text-sm font-semibold text-amber-800">
+                Ya registrado: {existing.name}
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Stock actual: <b>{existing.stock}</b> unidades. La cantidad que ingreses se sumará.
+              </p>
+            </div>
+          )}
           <Input
             label="Nombre del producto *"
             placeholder="Ej: Coca-Cola 600ml"
@@ -228,11 +255,16 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
 
           <div className="grid grid-cols-2 gap-4">
             <Input
-              label="Stock inicial *"
+              label={existing ? "Cantidad a agregar *" : "Stock inicial *"}
               type="number"
               placeholder="0"
               value={form.stock}
               onChange={(e) => setForm({ ...form, stock: e.target.value })}
+              helperText={
+                existing && form.stock
+                  ? `Quedará en ${existing.stock + (parseInt(form.stock) || 0)} unidades`
+                  : undefined
+              }
             />
             <Input
               label="Stock mínimo"

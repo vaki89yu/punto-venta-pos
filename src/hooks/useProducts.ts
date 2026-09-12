@@ -1,108 +1,95 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useSyncExternalStore, useCallback, useState, useEffect } from "react";
 import { Product } from "@/types";
-import { STORAGE_KEYS, demoProducts } from "@/data/seed";
 import { generateId, generateSKU, generateBarcode } from "@/lib/utils";
+import {
+  subscribe,
+  getSnapshot,
+  getServerSnapshot,
+  addProductToStore,
+  updateProductInStore,
+  deleteProductFromStore,
+  findByBarcode,
+  refresh,
+} from "@/lib/productStore";
 
+/**
+ * Hook de productos con estado global compartido.
+ *
+ * Todas las pantallas (POS, inventario, reportes, notificaciones...)
+ * comparten exactamente los mismos datos y se actualizan al instante.
+ */
 export function useProducts() {
-  const [products, setProducts] = useState<Product[]>([]);
+  const products = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const storedProducts = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
-    if (storedProducts) {
-      setProducts(JSON.parse(storedProducts));
-    } else {
-      setProducts(demoProducts);
-      localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(demoProducts));
-    }
     setIsLoading(false);
   }, []);
 
-  const saveProducts = useCallback((newProducts: Product[]) => {
-    setProducts(newProducts);
-    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(newProducts));
-  }, []);
-
-  const addProduct = useCallback((productData: Omit<Product, "id" | "createdAt" | "updatedAt">) => {
-    const newProduct: Product = {
-      ...productData,
-      id: generateId(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    const updatedProducts = [...products, newProduct];
-    saveProducts(updatedProducts);
-    return newProduct;
-  }, [products, saveProducts]);
+  const addProduct = useCallback(
+    (productData: Omit<Product, "id" | "createdAt" | "updatedAt">) => {
+      const newProduct: Product = {
+        ...productData,
+        id: generateId(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      return addProductToStore(newProduct);
+    },
+    []
+  );
 
   const updateProduct = useCallback((id: string, updates: Partial<Product>) => {
-    const updatedProducts = products.map((p) =>
-      p.id === id ? { ...p, ...updates, updatedAt: new Date() } : p
-    );
-    saveProducts(updatedProducts);
-  }, [products, saveProducts]);
+    updateProductInStore(id, updates);
+  }, []);
 
   const deleteProduct = useCallback((id: string) => {
-    const updatedProducts = products.filter((p) => p.id !== id);
-    saveProducts(updatedProducts);
-  }, [products, saveProducts]);
+    deleteProductFromStore(id);
+  }, []);
 
-  const getProductById = useCallback((id: string) => {
-    return products.find((p) => p.id === id);
-  }, [products]);
+  const getProductById = useCallback(
+    (id: string) => products.find((p) => p.id === id),
+    [products]
+  );
 
-  const getProductByBarcode = useCallback((barcode: string) => {
-    const clean = (barcode || "").trim().replace(/\s+/g, "");
-    if (!clean) return undefined;
+  // Lee siempre del store (nunca de una copia obsoleta)
+  const getProductByBarcode = useCallback(
+    (barcode: string) => findByBarcode(barcode),
+    []
+  );
 
-    // 1. Coincidencia exacta
-    let found = products.find((p) => p.barcode?.trim() === clean);
-    if (found) return found;
+  const getProductBySku = useCallback(
+    (sku: string) =>
+      products.find((p) => p.sku.toLowerCase() === sku.toLowerCase()),
+    [products]
+  );
 
-    // 2. Ignorando ceros a la izquierda (UPC-A 12 dígitos vs EAN-13 con 0 inicial)
-    const stripped = clean.replace(/^0+/, "");
-    found = products.find((p) => p.barcode?.trim().replace(/^0+/, "") === stripped);
-    if (found) return found;
+  const searchProducts = useCallback(
+    (query: string) => {
+      const q = query.toLowerCase().trim();
+      if (!q) return [];
+      return products.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          p.sku.toLowerCase().includes(q) ||
+          p.barcode.includes(q) ||
+          p.brand?.toLowerCase().includes(q)
+      );
+    },
+    [products]
+  );
 
-    // 3. Comparar solo los últimos 12 dígitos (variantes UPC/EAN)
-    if (clean.length >= 12) {
-      const tail = clean.slice(-12);
-      found = products.find((p) => {
-        const pb = p.barcode?.trim() || "";
-        return pb.length >= 12 && pb.slice(-12) === tail;
-      });
-      if (found) return found;
-    }
+  const getLowStockProducts = useCallback(
+    () => products.filter((p) => p.stock <= p.minStock && p.stock > 0 && p.isActive),
+    [products]
+  );
 
-    // 4. Buscar también por SKU (por si escanean etiqueta interna)
-    found = products.find((p) => p.sku?.trim().toLowerCase() === clean.toLowerCase());
-    return found;
-  }, [products]);
-
-  const getProductBySku = useCallback((sku: string) => {
-    return products.find((p) => p.sku.toLowerCase() === sku.toLowerCase());
-  }, [products]);
-
-  const searchProducts = useCallback((query: string) => {
-    const lowerQuery = query.toLowerCase();
-    return products.filter(
-      (p) =>
-        p.name.toLowerCase().includes(lowerQuery) ||
-        p.sku.toLowerCase().includes(lowerQuery) ||
-        p.barcode.includes(lowerQuery) ||
-        p.brand?.toLowerCase().includes(lowerQuery)
-    );
-  }, [products]);
-
-  const getLowStockProducts = useCallback(() => {
-    return products.filter((p) => p.stock <= p.minStock && p.isActive);
-  }, [products]);
-
-  const getOutOfStockProducts = useCallback(() => {
-    return products.filter((p) => p.stock === 0 && p.isActive);
-  }, [products]);
+  const getOutOfStockProducts = useCallback(
+    () => products.filter((p) => p.stock === 0 && p.isActive),
+    [products]
+  );
 
   return {
     products,
@@ -116,6 +103,7 @@ export function useProducts() {
     searchProducts,
     getLowStockProducts,
     getOutOfStockProducts,
+    refreshProducts: refresh,
   };
 }
 

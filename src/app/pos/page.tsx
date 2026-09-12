@@ -33,7 +33,7 @@ import {
 function POSContent() {
   const { showToast } = useToast();
   const { user } = useAuth();
-  const { products, getProductByBarcode, searchProducts, addProduct } = useProducts();
+  const { products, getProductByBarcode, searchProducts, addProduct, updateProduct } = useProducts();
   const { createSale } = useSales();
   const { items, addItem, clearCart, subtotal, tax, total, itemCount } = useCart();
 
@@ -208,10 +208,18 @@ function POSContent() {
       paymentData.cashReceived,
       paymentData.change
     );
+
+    // Descontar el stock vendido del inventario
+    items.forEach((item) => {
+      const current = getProductByBarcode(item.product.barcode) || item.product;
+      const newStock = Math.max(0, current.stock - item.quantity);
+      updateProduct(current.id, { stock: newStock });
+    });
+
     clearCart();
     setShowCheckout(false);
     setMobileView("products");
-    showToast("Venta completada exitosamente", "success");
+    showToast("Venta completada · Inventario actualizado", "success");
   };
 
   return (
