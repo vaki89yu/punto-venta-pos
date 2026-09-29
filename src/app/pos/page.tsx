@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useEffectEvent, useRef } from "react";
 import { ProtectedLayout } from "@/components/layout/ProtectedLayout";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { CartProvider, useCart } from "@/contexts/CartContext";
@@ -10,7 +10,6 @@ import { ProductGrid } from "@/components/pos/ProductGrid";
 import { Cart } from "@/components/pos/Cart";
 import { InnovativeCheckout } from "@/components/pos/InnovativeCheckout";
 import { QuickProductModal } from "@/components/pos/QuickProductModal";
-import { UsbScanner } from "@/components/scanner/UsbScanner";
 import { BarcodeScanner, ScanFeedback } from "@/components/scanner/BarcodeScanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -18,6 +17,7 @@ import { Modal } from "@/components/ui/Modal";
 import { useProducts } from "@/hooks/useProducts";
 import { useUsbScanner } from "@/hooks/useUsbScanner";
 import { normalizeBarcode } from "@/lib/productStore";
+import { createUsbInputReader } from "@/lib/usbInputReader";
 import { useSales } from "@/hooks/useSales";
 import { useAuth } from "@/contexts/AuthContext";
 import { Product, Customer, Category } from "@/types";
@@ -46,12 +46,12 @@ function POSContent() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
   const [showScanner, setShowScanner] = useState(false);
-  const [showUsbScanner, setShowUsbScanner] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [scannerContinuous, setScannerContinuous] = useState(false);
 
   const [barcodeInput, setBarcodeInput] = useState("");
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const barcodeReaderRef = useRef<ReturnType<typeof createUsbInputReader> | null>(null);
   const lastScanSource = useRef<"camera" | "usb">("camera");
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [showSearchModal, setShowSearchModal] = useState(false);
@@ -74,7 +74,6 @@ function POSContent() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (showUsbScanner) return;
       if (e.key === "F2") {
         e.preventDefault();
         setShowSearchModal(true);
@@ -90,7 +89,7 @@ function POSContent() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [items.length, showUsbScanner]);
+  }, [items.length]);
 
   const playBeep = useCallback((ok: boolean) => {
     try {
@@ -167,11 +166,35 @@ function POSContent() {
     handleScan(code, "usb");
   };
 
-  useUsbScanner(handleUsbScan, usbScannerEnabled && !showUsbScanner);
+  const handleUsbScanEvent = useEffectEvent(handleUsbScan);
+
+  useEffect(() => {
+    if (!usbScannerEnabled) return;
+
+    const reader = createUsbInputReader((code) => handleUsbScanEvent(code), 800);
+    barcodeReaderRef.current = reader;
+    return () => {
+      reader.dispose();
+      if (barcodeReaderRef.current === reader) barcodeReaderRef.current = null;
+    };
+  }, [usbScannerEnabled]);
+
+  useUsbScanner(handleUsbScan, usbScannerEnabled);
+
+  const submitBarcode = (value: string) => {
+    const reader = barcodeReaderRef.current;
+    if (reader) {
+      reader.update(value);
+      reader.submit();
+    } else {
+      handleUsbScan(value);
+    }
+  };
 
   const handleBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    handleUsbScan(barcodeInput);
+    submitBarcode(barcodeInputRef.current?.value || barcodeInput);
+    barcodeInputRef.current?.focus();
   };
 
   const handleSearch = (query: string) => {
@@ -252,9 +275,8 @@ function POSContent() {
                 type="button"
                 variant="success"
                 size="lg"
-                onClick={() => setShowUsbScanner(true)}
+                onClick={() => barcodeInputRef.current?.focus()}
                 leftIcon={<Usb className="w-6 h-6" />}
-                aria-haspopup="dialog"
               >
                 Escáner USB
               </Button>
@@ -296,13 +318,18 @@ function POSContent() {
                   autoComplete="off"
                   value={barcodeInput}
                   onKeyDown={(e) => {
-                    if ((e.key === "Enter" || e.key === "Tab") && barcodeInput.trim()) {
+                    if (e.key === "Enter" || (e.key === "Tab" && e.currentTarget.value.trim())) {
                       e.preventDefault();
                       e.stopPropagation();
-                      handleUsbScan(e.currentTarget.value);
+                      submitBarcode(e.currentTarget.value);
                     }
                   }}
-                  onChange={(e) => setBarcodeInput(e.target.value)}
+                  onChange={(e) => {
+                    const value = e.currentTarget.value;
+                    setBarcodeInput(value);
+                    barcodeReaderRef.current?.update(value);
+                  }}
+                  onBlur={() => barcodeReaderRef.current?.pause()}
                   leftIcon={<Scan className="w-4 h-4" />}
                   className="h-9"
                   inputMode="text"
@@ -317,10 +344,6 @@ function POSContent() {
                 <span className="hidden sm:inline">Continuo</span>
               </Button>
             </div>
-            <p className="mt-2 text-xs text-slate-500">
-              Conecta tu lector en modo teclado (HID) y pulsa «Escáner USB».
-              La ventana USB también recibe códigos sin Enter y permite probar el lector.
-            </p>
           </div>
 
           {/* Grid de productos */}
@@ -369,14 +392,6 @@ function POSContent() {
           </button>
         </div>
       </div>
-
-      {showUsbScanner && usbScannerEnabled && (
-        <UsbScanner
-          onClose={() => setShowUsbScanner(false)}
-          onScan={handleUsbScan}
-          feedback={scanFeedback}
-        />
-      )}
 
       {/* Escáner */}
       <BarcodeScanner

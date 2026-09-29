@@ -47,25 +47,13 @@ La cámara usa **ZXing-C++ (WebAssembly)** con todos los formatos legibles de es
 ## 🔌 Lector de códigos USB (Nextep en modo teclado HID)
 
 1. Conecta el lector en **modo teclado USB HID**. Si necesitas cambiar su configuración, usa el manual de su modelo exacto, no códigos de otro lector.
-2. Abre **Punto de Venta → Escáner USB**. Se abre una ventana dedicada y se enfoca el campo que recibe los códigos. No requiere cámara ni WebUSB.
-3. Escanea una etiqueta impresa. El campo muestra los caracteres recibidos y el panel conserva la última lectura. Un producto existente con stock se agrega al carrito; uno agotado muestra un aviso; un código nuevo abre el registro rápido. Al cerrar el registro vuelve la ventana USB.
+2. En **Punto de Venta**, pulsa **Escáner USB**. El botón sólo enfoca el campo de código; no abre una ventana adicional ni requiere cámara o WebUSB.
+3. Escanea una etiqueta impresa. El campo procesa directamente la lectura: un producto existente con stock se agrega al carrito; uno agotado muestra un aviso; un código nuevo abre el registro rápido.
 4. Escanea varias veces el mismo producto para aumentar su cantidad. No necesitas activar «Continuo», que corresponde a la cámara.
 
-### Lectores lentos o sin Enter
+El campo procesa el valor real que escribe el lector, incluso si la lectura es lenta o se inserta completa. Enter o Tab procesan inmediatamente la lectura y limpian el campo sin duplicarla; si el lector no envía terminador, el código se procesa automáticamente tras 800 ms sin cambios. Al perder el foco se pausa la lectura automática.
 
-La ventana USB usa el **valor real del campo**, no la detección de ráfagas rápidas. Admite lectores que escriben lentamente o insertan el código completo. Enter o Tab procesan inmediatamente la lectura y limpian el campo sin duplicarla.
-
-Por defecto, **Leer también sin Enter** procesa el código tras **800 ms sin cambios**. Para escribir manualmente o usar un lector que haga pausas de 800 ms o más dentro del código, desactiva esa opción y confirma con Enter, Tab o **Procesar código**. Si tu lector no envía terminador, deja al menos esa pausa entre productos; configurar Enter es lo más fiable para lecturas consecutivas.
-
-La captura automática se pausa al perder el foco, cambiar de ventana o abrir el registro de un producto nuevo. Usa **Continuar escaneando** para volver al campo. Al cerrar la ventana se cancelan todas las lecturas pendientes.
-
-Fuera de esta ventana, el detector global sigue aceptando ráfagas de al menos 3 caracteres con un máximo de 100 ms entre teclas, terminadas en Enter/Tab, sólo cuando no estás editando otro campo ni hay diálogos abiertos.
-
-### Diagnóstico del Nextep
-
-- Activa **Probar lector sin agregar productos al carrito**. Escanea y comprueba el texto de **Código recibido**.
-- Si no aparecen caracteres, abre el Bloc de notas y escanea una etiqueta impresa. Si tampoco escribe ahí, revisa el cable, otro puerto USB y la configuración de teclado HID. Indica el modelo exacto que aparece en la etiqueta del dispositivo para consultar sus instrucciones.
-- Los lectores en modo serie/COM o con protocolo propietario necesitan cambiar a HID o una integración específica. La aplicación no detecta físicamente la conexión USB: «Campo listo» significa que el campo tiene el foco, no que se haya detectado un dispositivo.
+Fuera del campo de código, el detector global sigue aceptando ráfagas de al menos 3 caracteres con un máximo de 100 ms entre teclas, terminadas en Enter/Tab, sólo cuando no estás editando otro campo ni hay diálogos abiertos.
 
 ### Verificación
 
