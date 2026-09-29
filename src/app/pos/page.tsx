@@ -10,6 +10,7 @@ import { ProductGrid } from "@/components/pos/ProductGrid";
 import { Cart } from "@/components/pos/Cart";
 import { InnovativeCheckout } from "@/components/pos/InnovativeCheckout";
 import { QuickProductModal } from "@/components/pos/QuickProductModal";
+import { UsbScanner } from "@/components/scanner/UsbScanner";
 import { BarcodeScanner, ScanFeedback } from "@/components/scanner/BarcodeScanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -45,7 +46,7 @@ function POSContent() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
   const [showScanner, setShowScanner] = useState(false);
-  const [showUsbHelp, setShowUsbHelp] = useState(false);
+  const [showUsbScanner, setShowUsbScanner] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [scannerContinuous, setScannerContinuous] = useState(false);
 
@@ -73,6 +74,7 @@ function POSContent() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (showUsbScanner) return;
       if (e.key === "F2") {
         e.preventDefault();
         setShowSearchModal(true);
@@ -88,7 +90,7 @@ function POSContent() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [items.length]);
+  }, [items.length, showUsbScanner]);
 
   const playBeep = useCallback((ok: boolean) => {
     try {
@@ -165,7 +167,7 @@ function POSContent() {
     handleScan(code, "usb");
   };
 
-  useUsbScanner(handleUsbScan, usbScannerEnabled);
+  useUsbScanner(handleUsbScan, usbScannerEnabled && !showUsbScanner);
 
   const handleBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -250,13 +252,9 @@ function POSContent() {
                 type="button"
                 variant="success"
                 size="lg"
-                onClick={() => {
-                  setShowUsbHelp(true);
-                  barcodeInputRef.current?.focus();
-                }}
+                onClick={() => setShowUsbScanner(true)}
                 leftIcon={<Usb className="w-6 h-6" />}
-                aria-expanded={showUsbHelp}
-                aria-controls="usb-scanner-help"
+                aria-haspopup="dialog"
               >
                 Escáner USB
               </Button>
@@ -269,33 +267,6 @@ function POSContent() {
               >
                 Cámara <span className="hidden lg:inline">(F3)</span>
               </Button>
-            </div>
-
-            <div id="usb-scanner-help" hidden={!showUsbHelp} className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
-              <div className="flex items-start justify-between gap-2">
-                <p className="font-semibold">Cómo usar tu escáner USB</p>
-                <button
-                  type="button"
-                  aria-label="Ocultar ayuda del escáner USB"
-                  onClick={() => {
-                    setShowUsbHelp(false);
-                    barcodeInputRef.current?.focus();
-                  }}
-                  className="rounded p-1 hover:bg-emerald-100 focus-visible:outline-2"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <ol className="mt-1 list-decimal pl-5 space-y-1">
-                <li>Conecta el lector al puerto USB de tu computadora.</li>
-                <li>Apunta al código de barras y presiona el gatillo del lector.</li>
-                <li>El producto se agregará al carrito. Si es nuevo, podrás registrarlo.</li>
-              </ol>
-              <p className="mt-2 text-xs text-emerald-800">
-                No necesitas abrir la cámara. Si el código aparece pero no se agrega,
-                presiona Enter y configura el lector para enviar Enter o Tab al final
-                de cada lectura, en modo teclado (HID).
-              </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -321,7 +292,6 @@ function POSContent() {
                 <Input
                   ref={barcodeInputRef}
                   aria-label="Código de barras o lector USB"
-                  aria-describedby={showUsbHelp ? "usb-scanner-help" : undefined}
                   placeholder="Escanea con USB o escribe el código..."
                   autoComplete="off"
                   value={barcodeInput}
@@ -348,8 +318,8 @@ function POSContent() {
               </Button>
             </div>
             <p className="mt-2 text-xs text-slate-500">
-              USB: conecta un lector en modo teclado (HID) con Enter o Tab al final.
-              Escanea directamente; si estás escribiendo en otro campo, pulsa «Escáner USB» primero.
+              Conecta tu lector en modo teclado (HID) y pulsa «Escáner USB».
+              La ventana USB también recibe códigos sin Enter y permite probar el lector.
             </p>
           </div>
 
@@ -399,6 +369,14 @@ function POSContent() {
           </button>
         </div>
       </div>
+
+      {showUsbScanner && usbScannerEnabled && (
+        <UsbScanner
+          onClose={() => setShowUsbScanner(false)}
+          onScan={handleUsbScan}
+          feedback={scanFeedback}
+        />
+      )}
 
       {/* Escáner */}
       <BarcodeScanner

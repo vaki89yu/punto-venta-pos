@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "test:scanner": "node --experimental-strip-types --test tests/usbScanner.test.mjs"
+    "test:scanner": "node --experimental-strip-types --test tests/usbScanner.test.mjs tests/usbInputReader.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.0",

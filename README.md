@@ -27,24 +27,34 @@ Sistema de Punto de Venta profesional para tiendas de abarrotes, construido con 
 
 ---
 
-## 🔌 Lector de códigos USB
+## 🔌 Lector de códigos USB (Nextep en modo teclado HID)
 
-1. Conecta el lector y configúralo en **modo teclado USB HID**, con **Enter o Tab como terminador** (consulta los códigos de configuración de su manual).
-2. Abre **Punto de Venta** y mantén la ventana del navegador activa. No requiere permisos de cámara ni WebUSB.
-3. Escanea el producto: usa la misma búsqueda y flujo que la cámara. Un producto existente con stock se agrega al carrito; uno agotado muestra un aviso; un código nuevo abre el registro rápido.
-4. Puedes escanear varias veces el mismo producto para aumentar su cantidad. No necesitas activar el botón «Continuo», que corresponde a la cámara.
+1. Conecta el lector en **modo teclado USB HID**. Si necesitas cambiar su configuración, usa el manual de su modelo exacto, no códigos de otro lector.
+2. Abre **Punto de Venta → Escáner USB**. Se abre una ventana dedicada y se enfoca el campo que recibe los códigos. No requiere cámara ni WebUSB.
+3. Escanea una etiqueta impresa. El campo muestra los caracteres recibidos y el panel conserva la última lectura. Un producto existente con stock se agrega al carrito; uno agotado muestra un aviso; un código nuevo abre el registro rápido. Al cerrar el registro vuelve la ventana USB.
+4. Escanea varias veces el mismo producto para aumentar su cantidad. No necesitas activar «Continuo», que corresponde a la cámara.
 
-El lector se escucha automáticamente cuando no estás editando otro campo y no hay diálogos abiertos. Si estás escribiendo una búsqueda o cantidad, pulsa **Escáner USB** para enfocar el campo de código antes de escanear. El botón muestra instrucciones de uso y enfoca el campo de código. Ese campo también acepta códigos escritos o pegados, confirmados con Enter o Tab, y lectores configurados con una velocidad lenta.
+### Lectores lentos o sin Enter
 
-**Compatibilidad:** la detección automática reconoce ráfagas de al menos 3 caracteres, con un máximo de 100 ms entre teclas y el terminador. El campo dedicado no impone ese ritmo ni longitud mínima. Los lectores en modo serie/COM o con protocolo propietario deben cambiarse a HID; no se accede directamente al dispositivo ni se muestra un estado de conexión físico, porque el navegador recibe sus lecturas como teclas. Sin terminador, configura Enter o Tab en el lector.
+La ventana USB usa el **valor real del campo**, no la detección de ráfagas rápidas. Admite lectores que escriben lentamente o insertan el código completo. Enter o Tab procesan inmediatamente la lectura y limpian el campo sin duplicarla.
 
-### Verificación del lector
+Por defecto, **Leer también sin Enter** procesa el código tras **800 ms sin cambios**. Para escribir manualmente o usar un lector que haga pausas de 800 ms o más dentro del código, desactiva esa opción y confirma con Enter, Tab o **Procesar código**. Si tu lector no envía terminador, deja al menos esa pausa entre productos; configurar Enter es lo más fiable para lecturas consecutivas.
 
-- `npm run test:scanner` (Node.js 22.6+): pruebas de ráfagas, Enter/Tab, ceros iniciales, códigos alfanuméricos, lecturas repetidas, escritura normal, interrupciones y limpieza de listeners.
-- En Punto de Venta, escanea un código registrado dos veces: debe aumentar dos unidades, sin abrir el cobro aunque ese botón tenga el foco.
-- Prueba un producto agotado y un código nuevo: deben mostrar el aviso y el registro, respectivamente.
-- Pulsa **Escáner USB** y prueba Enter y Tab: cada lectura debe agregar una sola unidad y limpiar el campo.
-- Comprueba que no se agregan productos al escribir en búsquedas o mientras están abiertos el cobro, el registro o la cámara. Verifica también que el escáner de cámara sigue funcionando.
+La captura automática se pausa al perder el foco, cambiar de ventana o abrir el registro de un producto nuevo. Usa **Continuar escaneando** para volver al campo. Al cerrar la ventana se cancelan todas las lecturas pendientes.
+
+Fuera de esta ventana, el detector global sigue aceptando ráfagas de al menos 3 caracteres con un máximo de 100 ms entre teclas, terminadas en Enter/Tab, sólo cuando no estás editando otro campo ni hay diálogos abiertos.
+
+### Diagnóstico del Nextep
+
+- Activa **Probar lector sin agregar productos al carrito**. Escanea y comprueba el texto de **Código recibido**.
+- Si no aparecen caracteres, abre el Bloc de notas y escanea una etiqueta impresa. Si tampoco escribe ahí, revisa el cable, otro puerto USB y la configuración de teclado HID. Indica el modelo exacto que aparece en la etiqueta del dispositivo para consultar sus instrucciones.
+- Los lectores en modo serie/COM o con protocolo propietario necesitan cambiar a HID o una integración específica. La aplicación no detecta físicamente la conexión USB: «Campo listo» significa que el campo tiene el foco, no que se haya detectado un dispositivo.
+
+### Verificación
+
+- `npm run test:scanner` (Node.js 22.6+): 18 pruebas de captura, terminadores, lectura sin Enter, pausas, duplicados, códigos pegados y limpieza al cerrar.
+- `npm run typecheck`: comprobación de TypeScript.
+- Validación adicional en Chromium con teclado simulado: enfoque, lectura lenta, Enter/Tab, lectura sin terminador, modo de prueba, agotados, registro de códigos nuevos, retorno al escáner y cancelación al cerrar. **Pendiente probar con el lector físico del usuario.**
 
 ---
 
