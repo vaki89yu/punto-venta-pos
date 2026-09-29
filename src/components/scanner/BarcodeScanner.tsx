@@ -1,12 +1,13 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { BrowserMultiFormatReader, BarcodeFormat } from "@zxing/browser";
-import { Result, DecodeHintType } from "@zxing/library";
 import { X, Smartphone, Monitor, Zap, ScanLine, CheckCircle2, PackagePlus, ShoppingCart } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
+import { createCameraReaderOptions, CAMERA_FORMAT_LABELS } from "@/lib/scannerFormats";
+import { cameraBarcodeText } from "@/lib/barcodes";
+import { loadCameraDecoder } from "@/lib/cameraDecoder";
 import { Product } from "@/types";
 
 export interface ScanFeedback {
@@ -33,12 +34,12 @@ export function BarcodeScanner({
   scannedCount = 0,
 }: BarcodeScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const readerRef = useRef<BrowserMultiFormatReader | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [isScanning, setIsScanning] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [lastCode, setLastCode] = useState<string>("");
+  const [lastFormat, setLastFormat] = useState("");
   const scanTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastCodeRef = useRef<string>("");
   const lockRef = useRef<boolean>(false);
@@ -79,6 +80,7 @@ export function BarcodeScanner({
       return;
     }
 
+    let cancelled = false;
     const getDevices = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -88,6 +90,7 @@ export function BarcodeScanner({
 
         const list = await navigator.mediaDevices.enumerateDevices();
         const videoDevices = list.filter((d) => d.kind === "videoinput");
+        if (cancelled) return;
         setDevices(videoDevices);
 
         const backCamera = videoDevices.find((d) => {
@@ -97,6 +100,7 @@ export function BarcodeScanner({
         setSelectedDevice(backCamera?.deviceId || videoDevices[videoDevices.length - 1]?.deviceId || "");
         setCameraError(null);
       } catch (error: any) {
+        if (cancelled) return;
         console.error("Error accessing camera:", error);
         setCameraError(
           error?.name === "NotAllowedError"
@@ -107,57 +111,92 @@ export function BarcodeScanner({
     };
 
     getDevices();
+    return () => { cancelled = true; };
   }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || !selectedDevice) return;
 
     let cancelled = false;
+    let stream: MediaStream | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const video = videoRef.current;
+    if (!video) return;
+
+    const stopStream = () => {
+      stream?.getTracks().forEach((track) => track.stop());
+      if (stream && video.srcObject === stream) video.srcObject = null;
+    };
 
     const startScanning = async () => {
       try {
-        const hints = new Map();
-        hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-          BarcodeFormat.EAN_13,
-          BarcodeFormat.EAN_8,
-          BarcodeFormat.UPC_A,
-          BarcodeFormat.UPC_E,
-          BarcodeFormat.CODE_128,
-          BarcodeFormat.CODE_39,
-          BarcodeFormat.ITF,
-          BarcodeFormat.CODABAR,
-          BarcodeFormat.QR_CODE,
-        ]);
-        hints.set(DecodeHintType.TRY_HARDER, true);
+        const decoder = await loadCameraDecoder();
+        if (cancelled) return;
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            deviceId: { exact: selectedDevice },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+        if (cancelled) { stopStream(); return; }
+        video.srcObject = stream;
+        await video.play();
+        if (cancelled) { stopStream(); return; }
 
-        const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 120 });
-        readerRef.current = reader;
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) throw new Error("No se pudo crear el lector de imagen");
+        const options = createCameraReaderOptions();
+        setCameraError(null);
+        setIsScanning(true);
 
-        await reader.decodeFromVideoDevice(
-          selectedDevice,
-          videoRef.current!,
-          (result: Result | undefined) => {
-            if (result && !cancelled) {
-              handleScan(result.getText());
+        const scanFrame = async () => {
+          if (cancelled) return;
+          try {
+            if (video.readyState >= 2 && video.videoWidth > 0) {
+              // Limitar el tamaño sin recortar códigos en los bordes de la imagen.
+              const scale = Math.min(1, 1280 / video.videoWidth);
+              canvas.width = Math.round(video.videoWidth * scale);
+              canvas.height = Math.round(video.videoHeight * scale);
+              context.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const results = await decoder.readBarcodes(context.getImageData(0, 0, canvas.width, canvas.height), options);
+              const result = results.find((item) => item.isValid && item.text.trim());
+              if (!cancelled && result) {
+                setLastFormat(result.format);
+                handleScan(cameraBarcodeText(result));
+              }
             }
+          } catch (error) {
+            if (!cancelled) {
+              console.error("Error decoding camera frame:", error);
+              setCameraError("No se pudo leer la imagen. Cierra y abre la cámara para reintentar.");
+              setIsScanning(false);
+              stopStream();
+            }
+            return;
           }
-        );
-
-        if (!cancelled) setIsScanning(true);
+          // No solapar decodificaciones: programar sólo al finalizar la anterior.
+          if (!cancelled) timer = setTimeout(scanFrame, 150);
+        };
+        void scanFrame();
       } catch (error) {
-        console.error("Error starting scanner:", error);
-        if (!cancelled) setCameraError("Error al iniciar la cámara. Intenta cerrar y abrir de nuevo.");
+        stopStream();
+        if (!cancelled) {
+          console.error("Error starting scanner:", error);
+          setCameraError("No se pudo iniciar el lector. Revisa el permiso de cámara y tu conexión; después cierra y abre de nuevo.");
+          setIsScanning(false);
+        }
       }
     };
 
-    startScanning();
+    void startScanning();
 
     return () => {
       cancelled = true;
-      if (readerRef.current) {
-        (readerRef.current as any).reset?.();
-        readerRef.current = null;
-      }
+      if (timer !== undefined) clearTimeout(timer);
+      stopStream();
       setIsScanning(false);
       lockRef.current = false;
       lastCodeRef.current = "";
@@ -260,7 +299,8 @@ export function BarcodeScanner({
             </div>
             {lastCode && (
               <div className="px-3 py-1 bg-white/90 rounded-full">
-                <span className="text-[11px] font-mono font-bold text-slate-800">{lastCode}</span>
+                <span className="text-[11px] font-mono font-bold text-slate-800 break-all">{lastCode}</span>
+                {lastFormat && <span className="block text-center text-[10px] text-slate-500">{lastFormat}</span>}
               </div>
             )}
           </div>
@@ -312,6 +352,12 @@ export function BarcodeScanner({
             </div>
           )}
         </div>
+
+        <details className="mt-3 text-xs text-slate-600">
+          <summary className="cursor-pointer font-medium">Formatos de cámara compatibles</summary>
+          <p className="mt-2">{CAMERA_FORMAT_LABELS}.</p>
+          <p className="mt-1">La lectura depende de la nitidez, el tamaño y la iluminación. El contenido se busca como código de producto; no se abren enlaces QR automáticamente.</p>
+        </details>
 
         {/* Leyenda */}
         <div className="mt-3 grid grid-cols-2 gap-2">

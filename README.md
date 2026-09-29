@@ -27,6 +27,23 @@ Sistema de Punto de Venta profesional para tiendas de abarrotes, construido con 
 
 ---
 
+## 📷 Lectura multiformato
+
+La cámara usa **ZXing-C++ (WebAssembly)** con todos los formatos legibles de esa versión habilitados: EAN/UPC (incluido UPC-E), Code 39/93/128, ITF, Codabar, GS1 DataBar y sus variantes, QR/Micro QR/rMQR, Data Matrix, Aztec, PDF417, MaxiCode, entre otros compatibles. Detecta rotaciones e inversión de color y rechaza resultados con errores. No se garantiza leer cualquier simbología propietaria ni códigos borrosos o dañados.
+
+- El motor se carga al abrir la cámara, **desde el propio sitio**, sin depender de un CDN. `npm install` / `npm ci` ejecutan `scripts/prepare-scanner.mjs` para copiar el WASM a `public/scanner/`; si omites scripts de instalación ejecuta `npm run postinstall` antes de desarrollar o desplegar.
+- Se conserva el texto del código: letras, ceros iniciales, guiones, espacios internos y símbolos. Primero se busca una coincidencia exacta y después la equivalencia UPC-A/EAN-13 con prefijo cero. No se recortan códigos largos para evitar vender un producto distinto.
+- UPC-E se conserva con sus 8 dígitos cuando el motor identifica ese formato. El código leído por cámara y por USB puede usarse como identificador de producto.
+- Los QR y los datos GS1 se tratan como identificadores de texto, no como instrucciones: no se abren enlaces ni se extraen automáticamente precios, lotes o GTIN de su contenido. Un código desconocido abre el registro de producto.
+- Los códigos guardados por versiones anteriores que ya perdieron guiones/espacios no se pueden reconstruir automáticamente; corrige el campo de código en Inventario si no coincide con la etiqueta.
+- **El USB depende del hardware:** se acepta el texto que envíe un lector HID. Un lector láser 1D no se convierte en lector QR/2D mediante software. Si no escribe en el Bloc de notas, hay que resolver su configuración o conexión; ampliar formatos en la aplicación no corrige eso.
+
+### Pruebas de formatos
+
+`npm run test:scanner` ejecuta 50 pruebas: captura USB, conservación/búsqueda de códigos y decodificación de imágenes generadas con **JsBarcode y BWIP-JS**, independientes del motor de lectura. Incluye EAN-13/8, UPC-A/E, Code 128/39/93, ITF, Codabar, QR, Micro QR, Data Matrix, Aztec, PDF417, DataBar Omni/Expanded y MaxiCode. También se verificó en Chromium el flujo cámara→carrito con una cámara simulada, el archivo WASM local, USB alfanumérico y la liberación de la cámara al cerrar. Falta validar con el lector y la cámara físicos del usuario.
+
+---
+
 ## 🔌 Lector de códigos USB (Nextep en modo teclado HID)
 
 1. Conecta el lector en **modo teclado USB HID**. Si necesitas cambiar su configuración, usa el manual de su modelo exacto, no códigos de otro lector.
@@ -52,7 +69,7 @@ Fuera de esta ventana, el detector global sigue aceptando ráfagas de al menos 3
 
 ### Verificación
 
-- `npm run test:scanner` (Node.js 22.6+): 18 pruebas de captura, terminadores, lectura sin Enter, pausas, duplicados, códigos pegados y limpieza al cerrar.
+- `npm run test:scanner` (Node.js 22.6+): pruebas de captura, terminadores, lectura sin Enter, pausas, duplicados, códigos pegados, formatos de imagen y limpieza al cerrar.
 - `npm run typecheck`: comprobación de TypeScript.
 - Validación adicional en Chromium con teclado simulado: enfoque, lectura lenta, Enter/Tab, lectura sin terminador, modo de prueba, agotados, registro de códigos nuevos, retorno al escáner y cancelación al cerrar. **Pendiente probar con el lector físico del usuario.**
 
@@ -107,6 +124,8 @@ npx drizzle-kit push
 ---
 
 ## 💻 Desarrollo local
+
+La fuente Inter se sirve localmente mediante `@fontsource-variable/inter`; la compilación no necesita descargar fuentes de Google Fonts.
 
 ```bash
 # 1. Instalar dependencias
@@ -179,7 +198,7 @@ src/
 - **Lenguaje:** TypeScript
 - **Estilos:** Tailwind CSS 4
 - **Base de datos:** PostgreSQL + Drizzle ORM
-- **Escáner:** @zxing/browser (EAN-13, UPC, Code 128, QR)
+- **Escáner:** ZXing-C++ / zxing-wasm (cámara multiformato) y lectores USB HID
 - **Gráficas:** Recharts
 - **Exportación:** jsPDF, SheetJS (xlsx)
 - **Animaciones:** Framer Motion

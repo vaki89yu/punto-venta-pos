@@ -305,7 +305,7 @@ function POSContent() {
                   onChange={(e) => setBarcodeInput(e.target.value)}
                   leftIcon={<Scan className="w-4 h-4" />}
                   className="h-9"
-                  inputMode="numeric"
+                  inputMode="text"
                 />
               </form>
               <Button

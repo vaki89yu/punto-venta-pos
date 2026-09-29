@@ -116,7 +116,8 @@ export function UsbScanner({ onClose, onScan, feedback }: UsbScannerProps) {
           </> : <p>Aún no se ha recibido un código. Este panel muestra lo que realmente envía el lector, no una conexión USB detectada.</p>}
         </div>
         <div className="text-xs text-slate-600 space-y-2">
-          <p><strong>¿No aparece ningún número?</strong> Abre el Bloc de notas y escanea una etiqueta impresa. Si tampoco escribe ahí, revisa el cable, otro puerto USB y el modo USB teclado (HID) del lector.</p>
+          <p>Se aceptan letras, números, guiones y símbolos que envíe el lector. Los formatos disponibles dependen de su hardware; para códigos 2D usa la cámara o un lector 2D compatible.</p>
+          <p><strong>¿No aparece ningún código?</strong> Abre el Bloc de notas y escanea una etiqueta impresa. Si tampoco escribe ahí, revisa el cable, otro puerto USB y el modo USB teclado (HID) del lector.</p>
           <p>Si no funciona, indícanos el modelo exacto de Nextep que aparece en su etiqueta y si escribe en el Bloc de notas. No uses códigos de configuración de otro modelo.</p>
         </div>
       </div>
