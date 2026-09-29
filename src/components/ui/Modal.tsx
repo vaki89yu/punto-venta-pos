@@ -54,6 +54,9 @@ export function Modal({
         onClick={onClose}
       />
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={cn(
           "relative w-full bg-white/98 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/10",
           "border border-slate-200/80",

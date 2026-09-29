@@ -53,3 +53,6 @@ yarn-error.log*
 # Credenciales locales
 .git-credentials
 *.token
+
+# Motor WASM generado por npm install
+/public/scanner/*.wasm

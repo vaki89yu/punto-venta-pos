@@ -12,7 +12,7 @@ Sistema de Punto de Venta profesional para tiendas de abarrotes, construido con 
 
 | Módulo | Descripción |
 |---|---|
-| 🛒 **Punto de Venta** | Venta rápida con escáner de códigos de barras por cámara |
+| 🛒 **Punto de Venta** | Venta rápida con escáner de códigos de barras por cámara o lector USB |
 | 📷 **Escáner inteligente** | Detecta si el producto existe (→ carrito) o es nuevo (→ registro) |
 | 📦 **Inventario** | 180+ productos mexicanos, ajustes de stock, alertas |
 | 💰 **Caja** | Apertura, cierre, movimientos y corte imprimible |
@@ -24,6 +24,54 @@ Sistema de Punto de Venta profesional para tiendas de abarrotes, construido con 
 | ⭐ **Lealtad** | Programa de puntos con 4 niveles |
 | 👥 **Usuarios** | 4 roles con permisos por módulo |
 | 📱 **Móvil** | Totalmente responsive, funciona como app |
+
+---
+
+## 📷 Lectura multiformato
+
+La cámara usa **ZXing-C++ (WebAssembly)** con todos los formatos legibles de esa versión habilitados: EAN/UPC (incluido UPC-E), Code 39/93/128, ITF, Codabar, GS1 DataBar y sus variantes, QR/Micro QR/rMQR, Data Matrix, Aztec, PDF417, MaxiCode, entre otros compatibles. Detecta rotaciones e inversión de color y rechaza resultados con errores. No se garantiza leer cualquier simbología propietaria ni códigos borrosos o dañados.
+
+- El motor se carga al abrir la cámara, **desde el propio sitio**, sin depender de un CDN. `npm install` / `npm ci` ejecutan `scripts/prepare-scanner.mjs` para copiar el WASM a `public/scanner/`; si omites scripts de instalación ejecuta `npm run postinstall` antes de desarrollar o desplegar.
+- Se conserva el texto del código: letras, ceros iniciales, guiones, espacios internos y símbolos. Primero se busca una coincidencia exacta y después la equivalencia UPC-A/EAN-13 con prefijo cero. No se recortan códigos largos para evitar vender un producto distinto.
+- UPC-E se conserva con sus 8 dígitos cuando el motor identifica ese formato. El código leído por cámara y por USB puede usarse como identificador de producto.
+- Los QR y los datos GS1 se tratan como identificadores de texto, no como instrucciones: no se abren enlaces ni se extraen automáticamente precios, lotes o GTIN de su contenido. Un código desconocido abre el registro de producto.
+- Los códigos guardados por versiones anteriores que ya perdieron guiones/espacios no se pueden reconstruir automáticamente; corrige el campo de código en Inventario si no coincide con la etiqueta.
+- **El USB depende del hardware:** se acepta el texto que envíe un lector HID. Un lector láser 1D no se convierte en lector QR/2D mediante software. Si no escribe en el Bloc de notas, hay que resolver su configuración o conexión; ampliar formatos en la aplicación no corrige eso.
+
+### Pruebas de formatos
+
+`npm run test:scanner` ejecuta 50 pruebas: captura USB, conservación/búsqueda de códigos y decodificación de imágenes generadas con **JsBarcode y BWIP-JS**, independientes del motor de lectura. Incluye EAN-13/8, UPC-A/E, Code 128/39/93, ITF, Codabar, QR, Micro QR, Data Matrix, Aztec, PDF417, DataBar Omni/Expanded y MaxiCode. También se verificó en Chromium el flujo cámara→carrito con una cámara simulada, el archivo WASM local, USB alfanumérico y la liberación de la cámara al cerrar. Falta validar con el lector y la cámara físicos del usuario.
+
+---
+
+## 🔌 Lector de códigos USB (Nextep en modo teclado HID)
+
+1. Conecta el lector en **modo teclado USB HID**. Si necesitas cambiar su configuración, usa el manual de su modelo exacto, no códigos de otro lector.
+2. Abre **Punto de Venta → Escáner USB**. Se abre una ventana dedicada y se enfoca el campo que recibe los códigos. No requiere cámara ni WebUSB.
+3. Escanea una etiqueta impresa. El campo muestra los caracteres recibidos y el panel conserva la última lectura. Un producto existente con stock se agrega al carrito; uno agotado muestra un aviso; un código nuevo abre el registro rápido. Al cerrar el registro vuelve la ventana USB.
+4. Escanea varias veces el mismo producto para aumentar su cantidad. No necesitas activar «Continuo», que corresponde a la cámara.
+
+### Lectores lentos o sin Enter
+
+La ventana USB usa el **valor real del campo**, no la detección de ráfagas rápidas. Admite lectores que escriben lentamente o insertan el código completo. Enter o Tab procesan inmediatamente la lectura y limpian el campo sin duplicarla.
+
+Por defecto, **Leer también sin Enter** procesa el código tras **800 ms sin cambios**. Para escribir manualmente o usar un lector que haga pausas de 800 ms o más dentro del código, desactiva esa opción y confirma con Enter, Tab o **Procesar código**. Si tu lector no envía terminador, deja al menos esa pausa entre productos; configurar Enter es lo más fiable para lecturas consecutivas.
+
+La captura automática se pausa al perder el foco, cambiar de ventana o abrir el registro de un producto nuevo. Usa **Continuar escaneando** para volver al campo. Al cerrar la ventana se cancelan todas las lecturas pendientes.
+
+Fuera de esta ventana, el detector global sigue aceptando ráfagas de al menos 3 caracteres con un máximo de 100 ms entre teclas, terminadas en Enter/Tab, sólo cuando no estás editando otro campo ni hay diálogos abiertos.
+
+### Diagnóstico del Nextep
+
+- Activa **Probar lector sin agregar productos al carrito**. Escanea y comprueba el texto de **Código recibido**.
+- Si no aparecen caracteres, abre el Bloc de notas y escanea una etiqueta impresa. Si tampoco escribe ahí, revisa el cable, otro puerto USB y la configuración de teclado HID. Indica el modelo exacto que aparece en la etiqueta del dispositivo para consultar sus instrucciones.
+- Los lectores en modo serie/COM o con protocolo propietario necesitan cambiar a HID o una integración específica. La aplicación no detecta físicamente la conexión USB: «Campo listo» significa que el campo tiene el foco, no que se haya detectado un dispositivo.
+
+### Verificación
+
+- `npm run test:scanner` (Node.js 22.6+): pruebas de captura, terminadores, lectura sin Enter, pausas, duplicados, códigos pegados, formatos de imagen y limpieza al cerrar.
+- `npm run typecheck`: comprobación de TypeScript.
+- Validación adicional en Chromium con teclado simulado: enfoque, lectura lenta, Enter/Tab, lectura sin terminador, modo de prueba, agotados, registro de códigos nuevos, retorno al escáner y cancelación al cerrar. **Pendiente probar con el lector físico del usuario.**
 
 ---
 
@@ -76,6 +124,8 @@ npx drizzle-kit push
 ---
 
 ## 💻 Desarrollo local
+
+La fuente Inter se sirve localmente mediante `@fontsource-variable/inter`; la compilación no necesita descargar fuentes de Google Fonts.
 
 ```bash
 # 1. Instalar dependencias
@@ -148,7 +198,7 @@ src/
 - **Lenguaje:** TypeScript
 - **Estilos:** Tailwind CSS 4
 - **Base de datos:** PostgreSQL + Drizzle ORM
-- **Escáner:** @zxing/browser (EAN-13, UPC, Code 128, QR)
+- **Escáner:** ZXing-C++ / zxing-wasm (cámara multiformato) y lectores USB HID
 - **Gráficas:** Recharts
 - **Exportación:** jsPDF, SheetJS (xlsx)
 - **Animaciones:** Framer Motion

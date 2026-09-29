@@ -1,5 +1,8 @@
 "use client";
 
+import { normalizeBarcode, findBarcodeMatch } from "@/lib/barcodes";
+export { normalizeBarcode } from "@/lib/barcodes";
+
 import { Product } from "@/types";
 import { STORAGE_KEYS, demoProducts } from "@/data/seed";
 
@@ -21,22 +24,6 @@ type Listener = () => void;
 
 let cache: Product[] | null = null;
 const listeners = new Set<Listener>();
-
-/** Normaliza un código de barras para comparaciones fiables */
-export function normalizeBarcode(code: string): string {
-  return (code || "").trim().replace(/[\s\-]/g, "");
-}
-
-/** Variantes de un código (maneja UPC-A ↔ EAN-13 y ceros a la izquierda) */
-function barcodeVariants(code: string): string[] {
-  const clean = normalizeBarcode(code);
-  if (!clean) return [];
-  const variants = new Set<string>([clean]);
-  variants.add(clean.replace(/^0+/, ""));           // sin ceros iniciales
-  variants.add(clean.padStart(13, "0"));            // como EAN-13
-  if (clean.length >= 12) variants.add(clean.slice(-12)); // últimos 12 dígitos
-  return [...variants].filter(Boolean);
-}
 
 function readStorage(): Product[] {
   if (typeof window === "undefined") return [];
@@ -105,10 +92,8 @@ export function addProductToStore(product: Product): Product {
   const current = readStorage();
 
   // Evitar duplicados: si el código ya existe, sumar stock en lugar de duplicar
-  const variants = barcodeVariants(product.barcode);
-  const existingIndex = current.findIndex((p) =>
-    variants.includes(normalizeBarcode(p.barcode))
-  );
+  const existing = findBarcodeMatch(current, product.barcode);
+  const existingIndex = existing ? current.indexOf(existing) : -1;
 
   if (existingIndex >= 0) {
     const updated = [...current];
@@ -152,13 +137,10 @@ export function deleteProductFromStore(id: string) {
 /** Búsqueda por código de barras tolerante a variantes de formato */
 export function findByBarcode(code: string): Product | undefined {
   const products = readStorage();
-  const variants = barcodeVariants(code);
-  if (variants.length === 0) return undefined;
+  if (!normalizeBarcode(code)) return undefined;
 
-  // 1. Por código de barras (todas las variantes)
-  const byBarcode = products.find((p) =>
-    variants.includes(normalizeBarcode(p.barcode))
-  );
+  // Coincidencia exacta primero; nunca recortar códigos largos ni eliminar símbolos.
+  const byBarcode = findBarcodeMatch(products, code);
   if (byBarcode) return byBarcode;
 
   // 2. Por SKU (etiquetas internas)
