@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ProtectedLayout } from "@/components/layout/ProtectedLayout";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { CartProvider, useCart } from "@/contexts/CartContext";
@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { useProducts } from "@/hooks/useProducts";
+import { useUsbScanner } from "@/hooks/useUsbScanner";
+import { normalizeBarcode } from "@/lib/productStore";
 import { useSales } from "@/hooks/useSales";
 import { useAuth } from "@/contexts/AuthContext";
 import { Product, Customer, Category } from "@/types";
@@ -22,6 +24,7 @@ import { STORAGE_KEYS } from "@/data/seed";
 import { formatCurrency } from "@/lib/utils";
 import {
   Scan,
+  Usb,
   Search,
   Zap,
   Package,
@@ -42,10 +45,13 @@ function POSContent() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
   const [showScanner, setShowScanner] = useState(false);
+  const [showUsbHelp, setShowUsbHelp] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [scannerContinuous, setScannerContinuous] = useState(false);
 
   const [barcodeInput, setBarcodeInput] = useState("");
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const lastScanSource = useRef<"camera" | "usb">("camera");
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [showSearchModal, setShowSearchModal] = useState(false);
 
@@ -103,7 +109,10 @@ function POSContent() {
   }, []);
 
   const handleScan = useCallback(
-    (barcode: string) => {
+    (rawCode: string, source: "camera" | "usb" = "camera") => {
+      const barcode = normalizeBarcode(rawCode);
+      if (!barcode) return;
+      lastScanSource.current = source;
       const product = getProductByBarcode(barcode);
 
       // CASO 1: El producto YA EXISTE → agregar al carrito para vender
@@ -116,7 +125,7 @@ function POSContent() {
           showToast(`${product.name} · ${formatCurrency(product.salePrice)}`, "success");
 
           setTimeout(() => setScanFeedback(null), 1300);
-          if (!scannerContinuous) {
+          if (source === "camera" && !scannerContinuous) {
             setTimeout(() => setShowScanner(false), 900);
           }
         } else {
@@ -132,36 +141,35 @@ function POSContent() {
       // CASO 2: Código NUEVO → abrir registro de producto
       setScanFeedback({ type: "new", barcode });
       playBeep(false);
-      setTimeout(() => {
+      if (source === "usb") {
         setScanFeedback(null);
-        setShowScanner(false);
+        showToast("Código nuevo, registra el producto", "info");
         setNewBarcode(barcode);
-      }, 1100);
+      } else {
+        setTimeout(() => {
+          setScanFeedback(null);
+          setShowScanner(false);
+          setNewBarcode(barcode);
+        }, 1100);
+      }
     },
     [getProductByBarcode, addItem, showToast, scannerContinuous, playBeep]
   );
 
+  const usbScannerEnabled = !!user && !showScanner && !showCheckout &&
+    !newBarcode && !showSearchModal && !showCodesHelp;
+
+  const handleUsbScan = (code: string) => {
+    if (!usbScannerEnabled) return;
+    setBarcodeInput("");
+    handleScan(code, "usb");
+  };
+
+  useUsbScanner(handleUsbScan, usbScannerEnabled);
+
   const handleBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const code = barcodeInput.trim();
-    if (!code) return;
-    setBarcodeInput("");
-
-    const product = getProductByBarcode(code);
-    if (product) {
-      if (product.stock > 0) {
-        addItem(product);
-        playBeep(true);
-        showToast(`${product.name} · ${formatCurrency(product.salePrice)}`, "success");
-      } else {
-        playBeep(false);
-        showToast(`"${product.name}" está agotado`, "error");
-      }
-    } else {
-      playBeep(false);
-      showToast("Código nuevo, registra el producto", "info");
-      setNewBarcode(code);
-    }
+    handleUsbScan(barcodeInput);
   };
 
   const handleSearch = (query: string) => {
@@ -189,7 +197,11 @@ function POSContent() {
 
   const handleScanAgain = () => {
     setNewBarcode(null);
-    setTimeout(() => setShowScanner(true), 200);
+    if (lastScanSource.current === "usb") {
+      barcodeInputRef.current?.focus();
+    } else {
+      setTimeout(() => setShowScanner(true), 200);
+    }
   };
 
   const handleCheckout = (paymentData: {
@@ -227,31 +239,66 @@ function POSContent() {
       <div className="lg:h-[calc(100vh-8rem)] flex flex-col lg:flex-row gap-4 pb-20 lg:pb-0">
         {/* Panel izquierdo - Productos */}
         <div
-          className={`flex-1 bg-white/95 backdrop-blur-sm rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-slate-200/80 overflow-hidden ${
-            mobileView === "cart" ? "hidden lg:block" : "block"
+          className={`flex-1 flex-col min-h-0 bg-white/95 backdrop-blur-sm rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-slate-200/80 overflow-hidden ${
+            mobileView === "cart" ? "hidden lg:flex" : "flex"
           }`}
         >
           {/* Barra de acciones rápidas */}
-          <div className="p-3 sm:p-4 border-b border-slate-200/80 bg-slate-50/80 backdrop-blur-sm">
-            {/* Botón escanear grande en móvil */}
-            <button
-              onClick={() => setShowScanner(true)}
-              className="lg:hidden w-full mb-3 flex items-center justify-center gap-3 py-4 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-blue-500/30 active:scale-[0.98] transition-transform"
-            >
-              <Scan className="w-6 h-6" />
-              ESCANEAR PRODUCTO
-            </button>
+          <div className="shrink-0 p-3 sm:p-4 border-b border-slate-200/80 bg-slate-50/80 backdrop-blur-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+              <Button
+                type="button"
+                variant="success"
+                size="lg"
+                onClick={() => {
+                  setShowUsbHelp(true);
+                  barcodeInputRef.current?.focus();
+                }}
+                leftIcon={<Usb className="w-6 h-6" />}
+                aria-expanded={showUsbHelp}
+                aria-controls="usb-scanner-help"
+              >
+                Escáner USB
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                size="lg"
+                onClick={() => setShowScanner(true)}
+                leftIcon={<Scan className="w-6 h-6" />}
+              >
+                Cámara <span className="hidden lg:inline">(F3)</span>
+              </Button>
+            </div>
+
+            <div id="usb-scanner-help" hidden={!showUsbHelp} className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+              <div className="flex items-start justify-between gap-2">
+                <p className="font-semibold">Cómo usar tu escáner USB</p>
+                <button
+                  type="button"
+                  aria-label="Ocultar ayuda del escáner USB"
+                  onClick={() => {
+                    setShowUsbHelp(false);
+                    barcodeInputRef.current?.focus();
+                  }}
+                  className="rounded p-1 hover:bg-emerald-100 focus-visible:outline-2"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <ol className="mt-1 list-decimal pl-5 space-y-1">
+                <li>Conecta el lector al puerto USB de tu computadora.</li>
+                <li>Apunta al código de barras y presiona el gatillo del lector.</li>
+                <li>El producto se agregará al carrito. Si es nuevo, podrás registrarlo.</li>
+              </ol>
+              <p className="mt-2 text-xs text-emerald-800">
+                No necesitas abrir la cámara. Si el código aparece pero no se agrega,
+                presiona Enter y configura el lector para enviar Enter o Tab al final
+                de cada lectura, en modo teclado (HID).
+              </p>
+            </div>
 
             <div className="flex flex-wrap gap-2">
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setShowScanner(true)}
-                leftIcon={<Scan className="w-4 h-4" />}
-                className="hidden lg:inline-flex"
-              >
-                Escanear (F3)
-              </Button>
               <Button
                 variant="secondary"
                 size="sm"
@@ -272,8 +319,19 @@ function POSContent() {
               </Button>
               <form onSubmit={handleBarcodeSubmit} className="flex-1 min-w-[140px]">
                 <Input
-                  placeholder="Código de barras..."
+                  ref={barcodeInputRef}
+                  aria-label="Código de barras o lector USB"
+                  aria-describedby={showUsbHelp ? "usb-scanner-help" : undefined}
+                  placeholder="Escanea con USB o escribe el código..."
+                  autoComplete="off"
                   value={barcodeInput}
+                  onKeyDown={(e) => {
+                    if ((e.key === "Enter" || e.key === "Tab") && barcodeInput.trim()) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleUsbScan(e.currentTarget.value);
+                    }
+                  }}
                   onChange={(e) => setBarcodeInput(e.target.value)}
                   leftIcon={<Scan className="w-4 h-4" />}
                   className="h-9"
@@ -289,10 +347,14 @@ function POSContent() {
                 <span className="hidden sm:inline">Continuo</span>
               </Button>
             </div>
+            <p className="mt-2 text-xs text-slate-500">
+              USB: conecta un lector en modo teclado (HID) con Enter o Tab al final.
+              Escanea directamente; si estás escribiendo en otro campo, pulsa «Escáner USB» primero.
+            </p>
           </div>
 
           {/* Grid de productos */}
-          <div className="h-auto lg:h-[calc(100%-80px)]">
+          <div className="flex-1 min-h-0">
             <ProductGrid products={products} categories={categories} onAddToCart={addItem} />
           </div>
         </div>

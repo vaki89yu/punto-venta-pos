@@ -5,6 +5,7 @@ import type { NextConfig } from "next";
 const isVercel = process.env.VERCEL === "1";
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["*.e2b.app"],
   ...(isVercel ? {} : { output: "standalone" as const }),
   images: {
     remotePatterns: [

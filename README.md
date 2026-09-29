@@ -12,7 +12,7 @@ Sistema de Punto de Venta profesional para tiendas de abarrotes, construido con 
 
 | Módulo | Descripción |
 |---|---|
-| 🛒 **Punto de Venta** | Venta rápida con escáner de códigos de barras por cámara |
+| 🛒 **Punto de Venta** | Venta rápida con escáner de códigos de barras por cámara o lector USB |
 | 📷 **Escáner inteligente** | Detecta si el producto existe (→ carrito) o es nuevo (→ registro) |
 | 📦 **Inventario** | 180+ productos mexicanos, ajustes de stock, alertas |
 | 💰 **Caja** | Apertura, cierre, movimientos y corte imprimible |
@@ -24,6 +24,27 @@ Sistema de Punto de Venta profesional para tiendas de abarrotes, construido con 
 | ⭐ **Lealtad** | Programa de puntos con 4 niveles |
 | 👥 **Usuarios** | 4 roles con permisos por módulo |
 | 📱 **Móvil** | Totalmente responsive, funciona como app |
+
+---
+
+## 🔌 Lector de códigos USB
+
+1. Conecta el lector y configúralo en **modo teclado USB HID**, con **Enter o Tab como terminador** (consulta los códigos de configuración de su manual).
+2. Abre **Punto de Venta** y mantén la ventana del navegador activa. No requiere permisos de cámara ni WebUSB.
+3. Escanea el producto: usa la misma búsqueda y flujo que la cámara. Un producto existente con stock se agrega al carrito; uno agotado muestra un aviso; un código nuevo abre el registro rápido.
+4. Puedes escanear varias veces el mismo producto para aumentar su cantidad. No necesitas activar el botón «Continuo», que corresponde a la cámara.
+
+El lector se escucha automáticamente cuando no estás editando otro campo y no hay diálogos abiertos. Si estás escribiendo una búsqueda o cantidad, pulsa **Escáner USB** para enfocar el campo de código antes de escanear. El botón muestra instrucciones de uso y enfoca el campo de código. Ese campo también acepta códigos escritos o pegados, confirmados con Enter o Tab, y lectores configurados con una velocidad lenta.
+
+**Compatibilidad:** la detección automática reconoce ráfagas de al menos 3 caracteres, con un máximo de 100 ms entre teclas y el terminador. El campo dedicado no impone ese ritmo ni longitud mínima. Los lectores en modo serie/COM o con protocolo propietario deben cambiarse a HID; no se accede directamente al dispositivo ni se muestra un estado de conexión físico, porque el navegador recibe sus lecturas como teclas. Sin terminador, configura Enter o Tab en el lector.
+
+### Verificación del lector
+
+- `npm run test:scanner` (Node.js 22.6+): pruebas de ráfagas, Enter/Tab, ceros iniciales, códigos alfanuméricos, lecturas repetidas, escritura normal, interrupciones y limpieza de listeners.
+- En Punto de Venta, escanea un código registrado dos veces: debe aumentar dos unidades, sin abrir el cobro aunque ese botón tenga el foco.
+- Prueba un producto agotado y un código nuevo: deben mostrar el aviso y el registro, respectivamente.
+- Pulsa **Escáner USB** y prueba Enter y Tab: cada lectura debe agregar una sola unidad y limpiar el campo.
+- Comprueba que no se agregan productos al escribir en búsquedas o mientras están abiertos el cobro, el registro o la cámara. Verifica también que el escáner de cámara sigue funcionando.
 
 ---
 

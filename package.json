@@ -8,7 +8,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "test:scanner": "node --experimental-strip-types --test tests/usbScanner.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.0",
