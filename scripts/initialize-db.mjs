@@ -1,5 +1,8 @@
+import dotenv from "dotenv";
 import { Pool } from "pg";
 import bcrypt from "bcryptjs";
+
+dotenv.config({ path: [".env.local", ".env"] });
 
 const databaseUrl = process.env.DATABASE_URL;
 const adminEmail = process.env.INITIAL_ADMIN_EMAIL?.trim().toLowerCase();
