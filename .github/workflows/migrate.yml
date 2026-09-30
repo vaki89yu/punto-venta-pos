@@ -1,0 +1,46 @@
+name: Migraciones Drizzle (db:push)
+
+# Aplica el esquema Drizzle a la base de producción (Neon).
+# Requiere el secreto DATABASE_URL (cadena de producción, sin pooling si
+# Neon lo indica; ver DEPLOY.md).
+#
+# SEGURIDAD:
+#  - Hay que escribir "MIGRAR" para ejecutarlo (gate anti-accidentes).
+#  - drizzle-kit push en CI NO acepta cambios destructivos de forma
+#    interactiva: si detectara pérdida de datos, falla. En ese caso se debe
+#    revisar el cambio y ejecutar la migración manualmente con confirmación.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Escribe "MIGRAR" (en mayúsculas) para confirmar'
+        required: true
+
+jobs:
+  push:
+    if: ${{ github.event.inputs.confirm == 'MIGRAR' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Instalar dependencias
+        run: npm ci --no-audit --no-fund
+      - name: Aplicar esquema (drizzle-kit push)
+        run: npm run db:push
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Verificar conexión
+        run: |
+          node -e "
+            const { Pool } = require('pg');
+            const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+            pool.query('select count(*) as tables from information_schema.tables where table_schema=\'public\'')
+              .then(r => { console.log('Tablas en public:', r.rows[0].tables); pool.end(); })
+              .catch(e => { console.error(e.message); process.exit(1); });
+          "
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

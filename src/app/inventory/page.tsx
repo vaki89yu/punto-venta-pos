@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { StockAdjustModal } from "@/components/inventory/StockAdjustModal";
+import { OpenFoodFactsCatalogPanel } from "@/components/inventory/OpenFoodFactsCatalogPanel";
 import { useProducts } from "@/hooks/useProducts";
 import { Product, Category } from "@/types";
 import { formatCurrency, generateSKU, generateBarcode } from "@/lib/utils";
@@ -212,6 +213,9 @@ function InventoryContent() {
             </table>
           </div>
         </Card>
+
+        {/* Catálogo de referencia Open Food Facts (productos inactivos, pendientes de precio) */}
+        <OpenFoodFactsCatalogPanel />
 
         {/* Add product modal */}
         <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Agregar producto" size="lg">

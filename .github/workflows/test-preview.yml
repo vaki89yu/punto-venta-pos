@@ -1,0 +1,55 @@
+name: Prueba de rutas del deployment
+
+# Prueba las rutas clave del POS contra un URL de deployment de Vercel.
+# Los runners de GitHub sí tienen salida a *.vercel.app (el sandbox de desarrollo no).
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "URL base del deployment (sin / final, ej. https://mi-app.vercel.app)"
+        required: false
+  push:
+    branches:
+      - "arena/**"
+    paths:
+      - ".github/workflows/test-preview.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determinar URL objetivo
+        id: target
+        env:
+          DEFAULT_URL: "https://punto-venta-pos-git-arena-01a0efb2-punto-venta-pos-vakita.vercel.app"
+        run: |
+          URL="${{ github.event.inputs.url }}"
+          if [ -z "$URL" ]; then URL="${{ vars.PREVIEW_URL }}"; fi
+          if [ -z "$URL" ]; then URL="$DEFAULT_URL"; fi
+          echo "Probando: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+      - name: Probar rutas principales
+        run: |
+          BASE="${{ steps.target.outputs.url }}"
+          echo "Probando $BASE"
+          fail=0
+          summary=""
+          for p in / /login /pos /inventory /suppliers /settings /api/health; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$BASE$p")
+            line="$p -> HTTP $code"
+            echo "$line"
+            summary="$summary$line; "
+            echo "::notice title=ruta $p::HTTP $code"
+            if [ "$code" != "200" ]; then fail=1; fi
+          done
+          echo "--- /api/health ---"
+          curl -sS --max-time 30 "$BASE/api/health"; echo
+          echo "--- /api/catalog/openfoodfacts ---"
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$BASE/api/catalog/openfoodfacts?page=1&pageSize=5")
+          echo "/api/catalog/openfoodfacts -> HTTP $code"
+          summary="${summary}api/catalog/openfoodfacts -> HTTP $code"
+          echo "::notice title=resumen::$summary"
+          if [ "$code" != "200" ]; then fail=1; fi
+          if [ "$fail" = "1" ]; then echo "::error title=smoke-test::Alguna ruta no respondió 200 (¿Deployment Protection de Vercel activo? Los previews con SSO devuelven 401/403 a curl)"; fi
+          exit $fail

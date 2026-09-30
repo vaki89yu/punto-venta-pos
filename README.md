@@ -202,6 +202,37 @@ src/
 
 ---
 
+## 🗃️ Catálogo Open Food Facts (México)
+
+El inventario puede enriquecerse con datos de producto de [Open Food Facts](https://world.openfoodfacts.org)
+(código de barras, nombre, marca, presentación, categoría y foto).
+
+```bash
+# Importa el catálogo real de México (requiere acceso a openfoodfacts.org)
+npm run catalog:import -- --all
+```
+
+Reglas de integración:
+
+- El catálogo vive en `src/data/openFoodFactsMexico.json` y se sirve **paginado** desde
+  `/api/catalog/openfoodfacts` — nunca se envía completo al navegador ni se guarda en `localStorage`.
+- Los productos importados aparecen **inactivos y pendientes de precio** en Inventario.
+- **Los precios y existencias nunca provienen de Open Food Facts**: son datos propios de la tienda.
+- Los códigos de barras se validan con dígitos de control GTIN y se deduplican (UPC-A ≡ EAN-13 con 0 inicial).
+
+### Atribución obligatoria
+
+Los datos de Open Food Facts se usan bajo las siguientes licencias, visibles también en la
+aplicación (Inventario y Configuración):
+
+- **Base de datos:** [Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/1-0/)
+- **Contenido de la base de datos:** [Database Contents License (DbCL) 1.0](https://opendatacommons.org/licenses/dbcl/1-0/)
+- **Fotografías:** [Creative Commons Attribution-ShareAlike (CC BY-SA) 3.0](https://creativecommons.org/licenses/by-sa/3.0/)
+
+© Open Food Facts Contributors · [Términos de uso](https://world.openfoodfacts.org/terms-of-use)
+
+---
+
 ## 📄 Licencia
 
 MIT

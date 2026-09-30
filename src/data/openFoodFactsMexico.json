@@ -1,0 +1,18 @@
+{
+  "source": "Open Food Facts",
+  "sourceUrl": "https://world.openfoodfacts.org",
+  "country": "mexico",
+  "license": "ODbL-1.0",
+  "databaseLicense": "DbCL-1.0",
+  "photosLicense": "CC BY-SA 3.0",
+  "attribution": "Datos de producto © Open Food Facts Contributors, licenciados bajo Open Database License (ODbL) 1.0. Contenido de la base de datos bajo Database Contents License (DbCL) 1.0. Fotografías bajo Creative Commons Attribution-ShareAlike (CC BY-SA) 3.0. https://world.openfoodfacts.org/terms-of-use",
+  "importedAt": null,
+  "counts": {
+    "fetched": 0,
+    "invalid": 0,
+    "duplicates": 0,
+    "imported": 0
+  },
+  "lastError": "Fallo de importación (2026-09-30T00:27:18.222Z): fetch failed",
+  "products": []
+}
