@@ -168,6 +168,32 @@ function SettingsContent() {
           </Card>
         </div>
 
+        <Card>
+          <CardHeader title="Atribución de datos — Open Food Facts" />
+          <CardContent>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Este sistema puede enriquecer su inventario con datos de producto de{" "}
+              <a
+                href="https://world.openfoodfacts.org"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sky-600 hover:underline font-medium"
+              >
+                Open Food Facts
+              </a>
+              , contribución de miles de voluntarios.
+            </p>
+            <ul className="mt-3 text-sm text-slate-600 dark:text-slate-300 list-disc list-inside space-y-1">
+              <li>Base de datos: <strong>Open Database License (ODbL) 1.0</strong></li>
+              <li>Contenido de la base de datos: <strong>Database Contents License (DbCL) 1.0</strong></li>
+              <li>Fotografías: <strong>Creative Commons Attribution-ShareAlike (CC BY-SA) 3.0</strong></li>
+            </ul>
+            <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+              Los precios y existencias nunca provienen de Open Food Facts: son datos propios de la tienda.
+            </p>
+          </CardContent>
+        </Card>
+
         <DatabaseTools />
 
         <div className="flex justify-end">

@@ -7,6 +7,33 @@ Guía completa para poner en marcha el Sistema POS en producción con GitHub + V
 
 ---
 
+## 🗃️ Catálogo Open Food Facts (opcional)
+
+El catálogo de referencia Open Food Facts (México) **no es necesario para desplegar**: si
+`src/data/openFoodFactsMexico.json` está vacío, la app funciona normal y en Inventario se
+muestra el aviso "catálogo todavía vacío".
+
+Para poblarlo (requiere acceso de red a `openfoodfacts.org`, que no siempre está disponible
+en entornos de CI):
+
+```bash
+npm run catalog:import -- --all
+npm run build   # incluir el catálogo en el despliegue
+```
+
+Notas:
+
+- El JSON vive sólo en el servidor y se consume **paginado** vía `/api/catalog/openfoodfacts`;
+  nunca viaja completo al navegador ni se guarda en `localStorage`.
+- Si el archivo creciera demasiado para el bundle de Vercel, dividirlo en shards o moverlo a
+  la base de datos (tabla de catálogo) es el siguiente paso previsto — no incrementar el
+  bundle del cliente.
+- Los productos OFF aparecen **inactivos y pendientes de precio**; precios y existencias son
+  siempre datos propios de la tienda.
+- Atribución obligatoria: ODbL 1.0 (base de datos), DbCL 1.0 (contenido), CC BY-SA 3.0 (fotos).
+
+---
+
 ## 📋 Requisitos previos
 
 Antes de empezar necesitas:

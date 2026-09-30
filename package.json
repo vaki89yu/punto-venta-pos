@@ -10,6 +10,7 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "test:scanner": "node --experimental-strip-types --test tests/*.test.mjs",
+    "catalog:import": "node scripts/catalog-import.mjs",
     "postinstall": "node scripts/prepare-scanner.mjs"
   },
   "dependencies": {
