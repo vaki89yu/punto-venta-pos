@@ -34,9 +34,13 @@ jobs:
           BASE="${{ steps.target.outputs.url }}"
           echo "Probando $BASE"
           fail=0
+          summary=""
           for p in / /login /pos /inventory /suppliers /settings /api/health; do
             code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$BASE$p")
-            echo "$p -> HTTP $code"
+            line="$p -> HTTP $code"
+            echo "$line"
+            summary="$summary$line; "
+            echo "::notice title=ruta $p::HTTP $code"
             if [ "$code" != "200" ]; then fail=1; fi
           done
           echo "--- /api/health ---"
@@ -44,5 +48,8 @@ jobs:
           echo "--- /api/catalog/openfoodfacts ---"
           code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$BASE/api/catalog/openfoodfacts?page=1&pageSize=5")
           echo "/api/catalog/openfoodfacts -> HTTP $code"
+          summary="${summary}api/catalog/openfoodfacts -> HTTP $code"
+          echo "::notice title=resumen::$summary"
           if [ "$code" != "200" ]; then fail=1; fi
+          if [ "$fail" = "1" ]; then echo "::error title=smoke-test::Alguna ruta no respondió 200 (¿Deployment Protection de Vercel activo? Los previews con SSO devuelven 401/403 a curl)"; fi
           exit $fail
