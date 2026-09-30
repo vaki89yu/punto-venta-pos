@@ -4,7 +4,8 @@ import bcrypt from "bcryptjs";
 
 dotenv.config({ path: [".env.local", ".env"] });
 
-const databaseUrl = process.env.DATABASE_URL;
+// Prefer Neon’s direct endpoint for the one-time database bootstrap.
+const databaseUrl = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 const adminEmail = process.env.INITIAL_ADMIN_EMAIL?.trim().toLowerCase();
 const adminPassword = process.env.INITIAL_ADMIN_PASSWORD;
 const adminName = process.env.INITIAL_ADMIN_NAME?.trim() || "Administrador";

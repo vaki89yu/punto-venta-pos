@@ -11,8 +11,9 @@ El POS usa PostgreSQL para usuarios, catálogo, ventas, caja, devoluciones y ope
 ## 2. Crear PostgreSQL en Neon
 
 1. Crea un proyecto PostgreSQL en Neon.
-2. Abre **Connection Details** y copia la cadena de conexión completa. Debe empezar con `postgresql://` y normalmente incluir `sslmode=require`.
-3. Guarda la cadena como secreto: contiene usuario y contraseña de la base. No la pegues en mensajes, capturas ni archivos de Git.
+2. Si el proyecto Vercel ya existe, conecta Neon desde la integración del proyecto (paso 6). La integración de Neon puede agregar `DATABASE_URL` (pool) y `DATABASE_URL_UNPOOLED` (conexión directa) a Vercel.
+3. Para configurar también el equipo localmente, abre **Connection Details** en Neon y copia la cadena completa. Debe empezar con `postgresql://` y normalmente incluir `sslmode=require`.
+4. Guarda la cadena como secreto: contiene usuario y contraseña de la base. No la pegues en mensajes, capturas ni archivos de Git.
 
 Usa una base/proyecto distinto para **Preview** y **Production** si vas a probar cambios; así las pruebas no alteran los datos de la tienda.
 
@@ -28,6 +29,8 @@ En Windows puedes copiar `.env.example` como `.env.local` desde el Explorador o 
 
 ```dotenv
 DATABASE_URL="postgresql://USUARIO:CONTRASENA@HOST/BASE?sslmode=require"
+# Opcional: conexión directa de Neon para migraciones e inicialización
+DATABASE_URL_UNPOOLED="postgresql://USUARIO:CONTRASENA@HOST/BASE?sslmode=require"
 SESSION_SECRET="UN_SECRETO_ALEATORIO_LARGO_DE_32_CARACTERES_O_MAS"
 INITIAL_ADMIN_EMAIL="tu-correo@negocio.com"
 INITIAL_ADMIN_PASSWORD="UNA_CONTRASENA_UNICA_DE_14_CARACTERES_O_MAS"
@@ -71,15 +74,35 @@ Si el health check muestra `not_configured`, `schema_missing` o `sessionConfigur
 
 Para probar una venta en la base real, crea primero productos con datos propios, existencias y precios reales, abre caja y revisa que la venta aparezca después de recargar. Haz esta prueba en una base de prueba separada si no quieres conservarla en Production.
 
-## 6. Configurar Vercel
+## 6. Conectar el proyecto Vercel existente con Neon
 
-1. Importa el repositorio en Vercel.
-2. En **Project → Settings → Environment Variables**, define `DATABASE_URL` y `SESSION_SECRET` para los ambientes que vas a usar (**Production** y, si corresponde, **Preview**).
-3. Para Preview, es preferible usar una base de prueba separada de Production.
-4. Guarda las variables y vuelve a desplegar para que las funciones las reciban.
-5. Abre `https://TU-DOMINIO/api/health`. No declares el POS listo hasta que responda HTTP 200 con `ok: true`.
+No necesitas volver a importar ni conectar el repositorio: si ya está vinculado a Vercel, solo conecta la base.
 
-La cuenta inicial se crea ejecutando `npm run db:initialize` contra la misma base configurada para el ambiente correspondiente. Los valores `INITIAL_ADMIN_EMAIL` y `INITIAL_ADMIN_PASSWORD` se necesitan para esa inicialización, no para cada inicio de sesión; no es necesario dejarlos en Vercel después si se inicializa desde una computadora segura.
+1. En Vercel abre el proyecto POS y entra a **Storage** o al catálogo **Marketplace/Integrations**; el nombre puede variar según el panel.
+2. Elige **Neon**, conecta tu cuenta y selecciona el proyecto/base Neon.
+3. Selecciona el proyecto Vercel y los ambientes que quieras conectar (**Production** y **Preview**). Para Preview, se recomienda una base separada o el branching de Neon.
+4. En **Settings → Environment Variables**, confirma que exista `DATABASE_URL`. La integración de Neon también puede agregar `DATABASE_URL_UNPOOLED`; el servidor POS usa `DATABASE_URL` y los comandos de esquema/inicialización prefieren `DATABASE_URL_UNPOOLED` cuando está disponible.
+5. Crea `SESSION_SECRET` como variable de entorno en los mismos ambientes. Usa un secreto aleatorio estable de 32 bytes o más; cambiarlo invalida las sesiones.
+6. Guarda los cambios y vuelve a desplegar.
+
+### Aplicar el esquema a la base conectada desde Vercel
+
+La integración solo configura la conexión; **no crea automáticamente las tablas ni el usuario inicial**. Para ejecutar la inicialización desde una computadora con acceso al repositorio:
+
+```bash
+npx vercel login
+npx vercel link
+npx vercel env pull .env.local --environment=production
+```
+
+Agrega a `.env.local` `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_PASSWORD` (14 caracteres o más), `INITIAL_ADMIN_NAME` y `STORE_NAME`. Luego ejecuta:
+
+```bash
+npm run db:push
+npm run db:initialize
+```
+
+Comprueba `https://TU-DOMINIO/api/health`: debe responder HTTP 200 con `ok: true`, `database: "connected"` y `sessionConfigured: true`. Si el entorno Preview usa otra base, repite `vercel env pull` con el ambiente `preview` y aplica el esquema a esa base solo si quieres inicializarla también.
 
 ## 7. Operación y seguridad
 
