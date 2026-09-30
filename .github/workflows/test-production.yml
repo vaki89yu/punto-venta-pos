@@ -1,0 +1,67 @@
+name: Prueba de rutas de producción
+
+# Se dispara con cada push a main (es decir, con cada merge que despliega
+# producción en Vercel). Descubre el URL de producción desde el deployment
+# de GitHub del commit, espera a que Vercel termine y prueba las rutas clave.
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Esperar y descubrir el deployment de producción
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          for i in $(seq 1 40); do
+            ID=$(gh api "repos/$REPO/deployments?sha=$SHA&per_page=10" \
+              -q '[.[] | select(.environment=="Production")][0].id' 2>/dev/null || true)
+            if [ -n "$ID" ] && [ "$ID" != "null" ]; then
+              STATE=$(gh api "repos/$REPO/deployments/$ID/statuses" -q '.[0].state')
+              URL=$(gh api "repos/$REPO/deployments/$ID/statuses" -q '.[0].environment_url')
+              echo "Deployment $ID: $STATE -> $URL"
+              if [ "$STATE" = "success" ] && [ -n "$URL" ]; then
+                echo "url=$URL" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if [ "$STATE" = "failure" ] || [ "$STATE" = "error" ]; then
+                echo "::error title=deployment::Vercel reportó $STATE para el deployment de producción"
+                exit 1
+              fi
+            fi
+            echo "[$i] esperando deployment de producción…"
+            sleep 15
+          done
+          echo "::error title=timeout::No apareció un deployment de producción exitoso en 10 minutos"
+          exit 1
+      - name: Probar rutas principales
+        run: |
+          BASE="${{ steps.target.outputs.url }}"
+          echo "Probando $BASE"
+          fail=0
+          summary=""
+          for p in / /login /pos /inventory /suppliers /settings /api/health; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$BASE$p")
+            line="$p -> HTTP $code"
+            echo "$line"
+            summary="$summary$line; "
+            echo "::notice title=ruta $p::HTTP $code"
+            if [ "$code" != "200" ]; then fail=1; fi
+          done
+          echo "--- /api/health ---"
+          curl -sS --max-time 30 "$BASE/api/health"; echo
+          echo "--- /api/catalog/openfoodfacts ---"
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$BASE/api/catalog/openfoodfacts?page=1&pageSize=5")
+          echo "/api/catalog/openfoodfacts -> HTTP $code"
+          summary="${summary}api/catalog/openfoodfacts -> HTTP $code"
+          echo "::notice title=resumen::$summary"
+          if [ "$code" != "200" ]; then fail=1; fi
+          if [ "$fail" = "1" ]; then echo "::error title=smoke-test::Alguna ruta de producción no respondió 200"; fi
+          exit $fail
