@@ -1,0 +1,165 @@
+name: Importar catálogo Open Food Facts
+
+# Descarga productos REALES desde la API pública de Open Food Facts y
+# regenera src/data/openFoodFactsMexico.json.
+#
+# ¿Por qué hace falta en CI y no en local?
+#   El entorno de desarrollo puede no tener salida a openfoodfacts.org; los
+#   runners de GitHub sí (ver el comentario en test-preview.yml). El catálogo
+#   commiteado actualmente está vacío con lastError "fetch failed" justamente
+#   por eso.
+#
+# El catálogo se hornea en el build (`npm run build`) y se sirve paginado vía
+# /api/catalog/openfoodfacts, así que este workflow COMMITEA el JSON
+# regenerado a la rama desde la que se dispara: sin commit no llega al
+# despliegue de Vercel (ver DEPLOY.md).
+#
+# SEGURIDAD:
+#  - Hay que escribir "IMPORTAR" para ejecutarlo (gate anti-accidentes, mismo
+#    criterio que migrate.yml con "MIGRAR").
+#  - El script nunca inventa registros: si la red falla conserva el catálogo
+#    previo o escribe uno vacío con lastError. Aquí además sólo se commitea si
+#    la importación trajo productos válidos, para no degradar el repositorio.
+#  - No toca la base de datos: sólo datos de referencia del producto (código,
+#    nombre, marca, presentación, categoría, foto). Precios y existencias son
+#    siempre datos propios de la tienda.
+#
+# Uso:
+#   gh workflow run "Importar catálogo Open Food Facts" \
+#     -f confirm=IMPORTAR -f max_pages=5
+#
+# Licencias de los datos importados: ODbL 1.0 (base), DbCL 1.0 (contenido),
+# CC BY-SA 3.0 (fotografías). https://world.openfoodfacts.org/terms-of-use
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Escribe "IMPORTAR" (en mayúsculas) para confirmar'
+        required: true
+      countries_tag:
+        description: "Tag de país en Open Food Facts"
+        required: false
+        default: "mexico"
+      query:
+        description: "Filtrar por término de búsqueda (opcional, vacío = catálogo completo)"
+        required: false
+        default: ""
+      page_size:
+        description: "Productos por página (1-600)"
+        required: false
+        default: "100"
+      max_pages:
+        description: "Máximo de páginas a descargar"
+        required: false
+        default: "500"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: catalog-import-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  importar:
+    if: ${{ github.event.inputs.confirm == 'IMPORTAR' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validar gate de confirmación
+        run: echo 'Confirmación "IMPORTAR" recibida. Rama destino: ${{ github.ref_name }}'
+
+      # fetch-depth 0: hace falta historial para poder commitear y pushear.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # persist-credentials es lo que permite el push posterior.
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci --no-audit --no-fund
+
+      - name: Importar catálogo (scripts/catalog-import.mjs)
+        run: |
+          ARGS=(--all --countries-tag "${{ github.event.inputs.countries_tag }}" \
+                --page-size "${{ github.event.inputs.page_size }}" \
+                --max-pages "${{ github.event.inputs.max_pages }}")
+          QUERY="${{ github.event.inputs.query }}"
+          if [ -n "$QUERY" ]; then ARGS+=(--query "$QUERY"); fi
+          echo "npm run catalog:import -- ${ARGS[*]}"
+          npm run catalog:import -- "${ARGS[@]}"
+
+      - name: Verificar catálogo y publicar resultados
+        id: catalog
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const p = "src/data/openFoodFactsMexico.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            const n = Array.isArray(c.products) ? c.products.length : 0;
+            const counts = c.counts || {};
+            const summary = `${n} productos; descargados=${counts.fetched ?? 0}, inválidos=${counts.invalid ?? 0}, duplicados=${counts.duplicates ?? 0}`;
+            console.log(summary);
+            console.log("importedAt:", c.importedAt);
+            console.log("license:", c.license, "| db:", c.databaseLicense, "| fotos:", c.photosLicense);
+            const out = (k, v) => fs.appendFileSync(process.env.GITHUB_OUTPUT, `${k}=${v}\n`);
+            out("products", n);
+            out("summary", summary.replace(/\n/g, " "));
+            out("imported_at", c.importedAt ?? "");
+            // lastError no nulo => el script cayó en el camino de error.
+            out("failed", c.lastError ? "true" : "false");
+            if (c.lastError) console.log(`::error title=catálogo OFF::${c.lastError}`);
+            else if (n === 0) console.log("::error title=catálogo OFF::0 productos importados");
+            else console.log(`::notice title=catálogo OFF::${summary}`);
+          '
+
+      # Sólo se commitea una importación exitosa: si el script falló o trajo 0
+      # productos, el JSON queda como estaba en el repositorio.
+      - name: Commitear y pushear el catálogo regenerado
+        if: ${{ steps.catalog.outputs.failed != 'true' && steps.catalog.outputs.products != '0' }}
+        run: |
+          FILE="src/data/openFoodFactsMexico.json"
+          if git diff --quiet -- "$FILE"; then
+            echo "El catálogo no cambió respecto del commit actual; nada que commitear."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$FILE"
+          MSG="chore(catálogo): importar Open Food Facts (${{ steps.catalog.outputs.summary }})"
+          git commit -m "$MSG"
+          # Reintentar el push por si la rama avanzó mientras corría la importación.
+          for i in 1 2 3; do
+            if git push origin "HEAD:${{ github.ref_name }}"; then exit 0; fi
+            echo "Push rechazado (intento $i/3), reintentando tras pull --rebase…"
+            git pull --rebase origin "${{ github.ref_name }}"
+          done
+          echo "::error title=push::No se pudo pushear el catálogo a ${{ github.ref_name }} tras 3 intentos"
+          exit 1
+
+      - name: Reportar cuando no se commiteó
+        if: ${{ steps.catalog.outputs.failed == 'true' || steps.catalog.outputs.products == '0' }}
+        run: |
+          echo "::warning title=catálogo OFF::La importación no produjo productos válidos; no se commiteó nada y el catálogo del repositorio queda intacto."
+          exit 1
+
+      - name: Resumen
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Catálogo Open Food Facts"
+            echo ""
+            echo "- Rama destino: \`${{ github.ref_name }}\`"
+            echo "- País: \`${{ github.event.inputs.countries_tag }}\`"
+            echo "- Búsqueda: \`${{ github.event.inputs.query || '(catálogo completo)' }}\`"
+            echo "- Resultados: ${{ steps.catalog.outputs.summary || 'n/d' }}"
+            echo "- Importado en: ${{ steps.catalog.outputs.imported_at || 'n/d' }}"
+            echo ""
+            echo "Atribución: datos © Open Food Facts Contributors — ODbL 1.0 (base), DbCL 1.0 (contenido), CC BY-SA 3.0 (fotos)."
+          } >> "$GITHUB_STEP_SUMMARY"
