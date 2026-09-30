@@ -15,7 +15,8 @@ import { useProducts } from "@/hooks/useProducts";
 import { useReturns } from "@/hooks/useReturns";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
 import { Sale } from "@/types";
-import { Search, RotateCcw, Package, CheckCircle, AlertCircle, Receipt } from "lucide-react";
+import { isFractionalUnit, restoreLotsFromSale } from "@/lib/professionalFeatures";
+import { Search, RotateCcw, CheckCircle, Receipt } from "lucide-react";
 
 function ReturnsContent() {
   const { showToast } = useToast();
@@ -34,10 +35,17 @@ function ReturnsContent() {
     s => s.ticketNumber.toLowerCase().includes(searchTicket.toLowerCase()) && s.status === "completed"
   );
 
+  const getPreviouslyReturnedQuantity = (saleId: string, saleItemId: string, productId?: string) =>
+    returns
+      .filter((record) => record.saleId === saleId && record.status === "approved")
+      .flatMap((record) => record.items)
+      .filter((item) => item.saleItemId === saleItemId || (!item.saleItemId && item.productId === productId))
+      .reduce((sum, item) => sum + item.quantityReturned, 0);
+
   const handleSelectSale = (sale: Sale) => {
     setSelectedSale(sale);
     const initial: Record<string, number> = {};
-    sale.items.forEach(item => { initial[item.productId] = 0; });
+    sale.items.forEach(item => { initial[item.id] = 0; });
     setReturnQuantities(initial);
     setShowModal(true);
   };
@@ -49,52 +57,67 @@ function ReturnsContent() {
   const calculateRefund = () => {
     if (!selectedSale) return 0;
     return selectedSale.items.reduce((sum, item) => {
-      const qty = returnQuantities[item.productId] || 0;
-      return sum + qty * item.price;
+      const qty = returnQuantities[item.id] || 0;
+      const availableQuantity = item.quantity - getPreviouslyReturnedQuantity(selectedSale.id, item.id, item.productId);
+      const refundableQuantity = Math.min(qty, Math.max(0, availableQuantity));
+      const refundPerUnit = item.quantity > 0 ? item.total / item.quantity : 0;
+      return sum + refundableQuantity * refundPerUnit;
     }, 0);
   };
 
   const handleConfirmReturn = () => {
     if (!selectedSale || !user) return;
-
-    const itemsToReturn = selectedSale.items
-      .filter(item => (returnQuantities[item.productId] || 0) > 0)
-      .map(item => {
-        const product = getProductById(item.productId);
-        const qty = returnQuantities[item.productId];
-        return {
-          productId: item.productId,
-          productName: product?.name || "Producto",
-          quantityReturned: qty,
-          price: item.price,
-          refundAmount: qty * item.price,
-        };
-      });
-
-    if (itemsToReturn.length === 0) {
-      showToast("Selecciona al menos un producto para devolver", "warning");
+    if (user.role !== "admin" && user.role !== "manager") {
+      showToast("La aprobación de devoluciones requiere a un gerente o administrador.", "error");
       return;
     }
-
     if (!reason.trim()) {
       showToast("Ingresa el motivo de la devolución", "warning");
       return;
     }
 
-    // Update inventory
-    itemsToReturn.forEach(item => {
+    const itemsToReturn = selectedSale.items
+      .filter((item) => (returnQuantities[item.id] || 0) > 0)
+      .map((item) => {
+        const previousReturns = returns
+          .filter((record) => record.saleId === selectedSale.id && record.status === "approved")
+          .flatMap((record) => record.items)
+          .filter((returnedItem) => returnedItem.saleItemId === item.id || (!returnedItem.saleItemId && returnedItem.productId === item.productId));
+        const previousLotReturns = previousReturns.flatMap((returnedItem) => returnedItem.lotAllocations || []);
+        const remainingAllowed = Math.max(0, item.quantity - previousReturns.reduce((sum, returnedItem) => sum + returnedItem.quantityReturned, 0));
+        const quantityReturned = Math.min(returnQuantities[item.id] || 0, remainingAllowed);
+        const refundPerUnit = item.quantity > 0 ? item.total / item.quantity : 0;
+        const lotAllocations = restoreLotsFromSale(item.lotAllocations || [], quantityReturned, previousLotReturns);
+        const product = getProductById(item.productId);
+        return {
+          saleItemId: item.id,
+          productId: item.productId,
+          productName: product?.name || "Producto",
+          quantityReturned,
+          price: item.price,
+          refundAmount: Math.round(quantityReturned * refundPerUnit * 100) / 100,
+          lotAllocations,
+        };
+      })
+      .filter((item) => item.quantityReturned > 0);
+
+    if (itemsToReturn.length === 0) {
+      showToast("No quedan cantidades elegibles para devolver en este ticket", "warning");
+      return;
+    }
+
+    // Restablece las existencias y, cuando la venta tenía trazabilidad, devuelve cada fracción a su lote original.
+    itemsToReturn.forEach((item) => {
       const product = getProductById(item.productId);
-      if (product) {
-        updateProduct(item.productId, { stock: product.stock + item.quantityReturned });
-      }
+      if (product) updateProduct(item.productId, { stock: product.stock + item.quantityReturned });
     });
 
     createReturn({
       saleId: selectedSale.id,
       ticketNumber: selectedSale.ticketNumber,
       items: itemsToReturn,
-      totalRefund: calculateRefund(),
-      reason,
+      totalRefund: Math.round(calculateRefund() * 100) / 100,
+      reason: reason.trim(),
       processedBy: user.id,
     });
 
@@ -218,23 +241,30 @@ function ReturnsContent() {
                 <div className="space-y-2">
                   {selectedSale.items.map(item => {
                     const product = getProductById(item.productId);
+                    const previouslyReturned = getPreviouslyReturnedQuantity(selectedSale.id, item.id, item.productId);
+                    const maxReturn = Math.max(0, item.quantity - previouslyReturned);
+                    const step = isFractionalUnit(product?.unit || "pieza") ? 0.05 : 1;
+                    const quantity = returnQuantities[item.id] || 0;
                     return (
-                      <div key={item.productId} className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-xl">
+                      <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
                         <div className="flex-1">
-                          <p className="font-medium text-sm">{product?.name || "Producto"}</p>
+                          <p className="text-sm font-medium">{product?.name || "Producto"}</p>
                           <p className="text-xs text-slate-500">
-                            Comprado: {item.quantity} x {formatCurrency(item.price)}
+                            Comprado: {item.quantity} {product?.unit || "unid."} · {formatCurrency(item.price)} / {product?.unit || "unid."}
                           </p>
+                          {previouslyReturned > 0 && <p className="text-xs font-medium text-amber-700">Ya devuelto: {previouslyReturned} · restante {maxReturn}</p>}
                         </div>
                         <div className="flex items-center gap-2">
                           <button
-                            onClick={() => handleQuantityChange(item.productId, (returnQuantities[item.productId] || 0) - 1, item.quantity)}
-                            className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center font-bold"
-                          >-</button>
-                          <span className="w-8 text-center font-semibold">{returnQuantities[item.productId] || 0}</span>
+                            disabled={quantity <= 0}
+                            onClick={() => handleQuantityChange(item.id, quantity <= step ? 0 : quantity - step, maxReturn)}
+                            className="h-8 w-8 rounded-lg bg-slate-100 font-bold hover:bg-slate-200 disabled:opacity-40"
+                          >−</button>
+                          <span className="w-12 text-center text-sm font-semibold">{quantity}</span>
                           <button
-                            onClick={() => handleQuantityChange(item.productId, (returnQuantities[item.productId] || 0) + 1, item.quantity)}
-                            className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center font-bold"
+                            disabled={quantity >= maxReturn}
+                            onClick={() => handleQuantityChange(item.id, Math.min(maxReturn, quantity + step), maxReturn)}
+                            className="h-8 w-8 rounded-lg bg-slate-100 font-bold hover:bg-slate-200 disabled:opacity-40"
                           >+</button>
                         </div>
                       </div>
@@ -261,7 +291,7 @@ function ReturnsContent() {
                 <Button variant="secondary" fullWidth onClick={() => setShowModal(false)}>
                   Cancelar
                 </Button>
-                <Button variant="danger" fullWidth onClick={handleConfirmReturn} leftIcon={<CheckCircle className="w-4 h-4" />}>
+                <Button variant="danger" fullWidth onClick={handleConfirmReturn} disabled={user?.role !== "admin" && user?.role !== "manager"} leftIcon={<CheckCircle className="w-4 h-4" />}>
                   Confirmar Devolución
                 </Button>
               </div>

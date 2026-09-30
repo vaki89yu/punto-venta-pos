@@ -2,17 +2,20 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { generateId } from "@/lib/utils";
+import { InventoryLotAllocation, recordAuditEvent } from "@/lib/professionalFeatures";
 
 export interface ReturnRecord {
   id: string;
   saleId: string;
   ticketNumber: string;
   items: {
+    saleItemId: string;
     productId: string;
     productName: string;
     quantityReturned: number;
     price: number;
     refundAmount: number;
+    lotAllocations?: InventoryLotAllocation[];
   }[];
   totalRefund: number;
   reason: string;
@@ -45,6 +48,14 @@ export function useReturns() {
     };
     const updated = [newReturn, ...returns];
     saveReturns(updated);
+    recordAuditEvent({
+      action: "return.approved",
+      entityType: "return",
+      entityId: newReturn.id,
+      summary: `Devolución del ticket ${newReturn.ticketNumber} aprobada por $${newReturn.totalRefund.toFixed(2)}.`,
+      metadata: { saleId: newReturn.saleId, totalRefund: newReturn.totalRefund, reason: newReturn.reason },
+      actorId: newReturn.processedBy,
+    });
     return newReturn;
   }, [returns, saveReturns]);
 

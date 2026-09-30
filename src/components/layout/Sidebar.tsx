@@ -24,6 +24,7 @@ import {
   Award,
   Tag,
   X,
+  Sparkles,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -45,6 +46,7 @@ const menuItems = [
   { path: "/labels", label: "Etiquetas", icon: Tag, module: "inventory" },
   { path: "/cash", label: "Caja", icon: Wallet, module: "cash" },
   { path: "/reports", label: "Reportes", icon: FileBarChart, module: "reports" },
+  { path: "/operations", label: "Radar inteligente", icon: Sparkles, module: "operations" },
   { path: "/loyalty", label: "Lealtad", icon: Award, module: "customers" },
   { path: "/users", label: "Usuarios", icon: Users, module: "users" },
   { path: "/settings", label: "Configuración", icon: Settings, module: "settings" },

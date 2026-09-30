@@ -80,6 +80,7 @@ export interface SaleItem {
   tax: number;
   subtotal: number;
   total: number;
+  lotAllocations?: { lotId: string; lotCode: string; quantity: number }[];
 }
 
 export interface Sale {
@@ -188,6 +189,9 @@ export interface StoreSettings {
   taxRate: number;
   currency: string;
   ticketMessage?: string;
+  minimumGrossMarginPercent?: number;
+  defaultCoverageDays?: number;
+  defaultLeadTimeDays?: number;
   theme: "light" | "dark" | "system";
 }
 

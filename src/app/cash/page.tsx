@@ -13,6 +13,7 @@ import { Modal } from "@/components/ui/Modal";
 import { formatCurrency } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { STORAGE_KEYS } from "@/data/seed";
+import { recordAuditEvent } from "@/lib/professionalFeatures";
 import {
   Wallet,
   TrendingUp,
@@ -50,6 +51,7 @@ function CashContent() {
   const [showMovementModal, setShowMovementModal] = useState(false);
   const [movementType, setMovementType] = useState<"in" | "out">("in");
   const [amount, setAmount] = useState("");
+  const [movementReason, setMovementReason] = useState("");
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEYS.CASH_REGISTER);
@@ -75,6 +77,7 @@ function CashContent() {
     };
     setCashRegister(newRegister);
     localStorage.setItem(STORAGE_KEYS.CASH_REGISTER, JSON.stringify(newRegister));
+    recordAuditEvent({ action: "cash_register.opened", entityType: "cash_register", entityId: newRegister.id, summary: `Caja abierta por ${formatCurrency(newRegister.openingAmount)}.`, metadata: { openingAmount: newRegister.openingAmount }, actorId: user.id });
     setShowOpenModal(false);
     setAmount("");
     showToast("Caja abierta exitosamente", "success");
@@ -90,6 +93,15 @@ function CashContent() {
     };
     setCashRegister(closed);
     localStorage.setItem(STORAGE_KEYS.CASH_REGISTER, JSON.stringify(closed));
+    const expectedAtClose = closed.openingAmount + closed.cashSales + closed.cashIn - closed.cashOut;
+    recordAuditEvent({
+      action: "cash_register.closed",
+      entityType: "cash_register",
+      entityId: closed.id,
+      summary: `Caja cerrada. Diferencia: ${formatCurrency(closed.closingAmount! - expectedAtClose)}.`,
+      metadata: { expected: expectedAtClose, counted: closed.closingAmount!, difference: closed.closingAmount! - expectedAtClose },
+      actorId: user?.id,
+    });
     setShowCloseModal(false);
     setAmount("");
     showToast("Caja cerrada exitosamente", "success");
@@ -142,15 +154,30 @@ function CashContent() {
 
   const handleMovement = () => {
     if (!cashRegister) return;
+    if (!movementReason.trim()) {
+      showToast("Describe el motivo del movimiento de efectivo", "warning");
+      return;
+    }
+    const movementAmount = Number(amount);
+    if (!Number.isFinite(movementAmount) || movementAmount <= 0) return;
     const updated = {
       ...cashRegister,
-      cashIn: movementType === "in" ? cashRegister.cashIn + parseFloat(amount) : cashRegister.cashIn,
-      cashOut: movementType === "out" ? cashRegister.cashOut + parseFloat(amount) : cashRegister.cashOut,
+      cashIn: movementType === "in" ? cashRegister.cashIn + movementAmount : cashRegister.cashIn,
+      cashOut: movementType === "out" ? cashRegister.cashOut + movementAmount : cashRegister.cashOut,
     };
     setCashRegister(updated);
     localStorage.setItem(STORAGE_KEYS.CASH_REGISTER, JSON.stringify(updated));
+    recordAuditEvent({
+      action: `cash.${movementType}`,
+      entityType: "cash_register",
+      entityId: updated.id,
+      summary: `${movementType === "in" ? "Entrada" : "Salida"} de efectivo por ${formatCurrency(movementAmount)}. Motivo: ${movementReason.trim()}.`,
+      metadata: { amount: movementAmount, type: movementType, reason: movementReason.trim() },
+      actorId: user?.id,
+    });
     setShowMovementModal(false);
     setAmount("");
+    setMovementReason("");
     showToast(`Movimiento de ${movementType === "in" ? "entrada" : "salida"} registrado`, "success");
   };
 
@@ -387,13 +414,22 @@ function CashContent() {
             <Input
               label="Monto"
               type="number"
+              min="0.01"
+              step="0.01"
               placeholder="0.00"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               leftIcon={<DollarSign className="w-4 h-4" />}
               required
             />
-            <Button onClick={handleMovement} fullWidth disabled={!amount}>
+            <Input
+              label="Motivo obligatorio"
+              value={movementReason}
+              onChange={(e) => setMovementReason(e.target.value)}
+              placeholder="Ej. Pago a proveedor, retiro para cambio..."
+              required
+            />
+            <Button onClick={handleMovement} fullWidth disabled={!amount || !movementReason.trim()}>
               Registrar
             </Button>
           </div>

@@ -14,6 +14,7 @@ import { usePurchaseOrders, PurchaseOrderItem } from "@/hooks/usePurchaseOrders"
 import { useProducts } from "@/hooks/useProducts";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Supplier } from "@/types";
+import { isFractionalUnit } from "@/lib/professionalFeatures";
 import { STORAGE_KEYS } from "@/data/seed";
 import { Plus, Truck, Package, CheckCircle, Clock, X, Trash2, Phone, Mail, MapPin, Building2, User } from "lucide-react";
 
@@ -43,7 +44,8 @@ function PurchaseOrdersContent() {
     const product = products.find(p => p.id === selectedProductId);
     if (!product || !quantity) return;
 
-    const qty = parseInt(quantity);
+    const qty = Number(quantity);
+    if (!Number.isFinite(qty) || qty <= 0) return;
     const newItem: PurchaseOrderItem = {
       productId: product.id,
       productName: product.name,
@@ -309,8 +311,9 @@ function PurchaseOrdersContent() {
                 type="number"
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
-                className="w-20 px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-900"
-                min="1"
+                className="w-24 px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-900"
+                min={isFractionalUnit(products.find((product) => product.id === selectedProductId)?.unit || "pieza") ? "0.001" : "1"}
+                step={isFractionalUnit(products.find((product) => product.id === selectedProductId)?.unit || "pieza") ? "0.001" : "1"}
               />
               <Button onClick={handleAddItem} leftIcon={<Plus className="w-4 h-4" />}>
                 Agregar

@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { ProtectedLayout } from "@/components/layout/ProtectedLayout";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { ToastProvider, useToast } from "@/components/ui/Toast";
 import { Card } from "@/components/ui/Card";
@@ -17,6 +17,7 @@ import { Search, Calendar, Receipt, Eye, Printer, XCircle, FileText } from "luci
 
 function SalesContent() {
   const { showToast } = useToast();
+  const { user } = useAuth();
   const { sales, getTodaySales, cancelSale } = useSales();
   const [searchQuery, setSearchQuery] = useState("");
   const [filterPeriod, setFilterPeriod] = useState<"all" | "today" | "week" | "month">("all");
@@ -36,9 +37,17 @@ function SalesContent() {
   });
 
   const handleCancel = (id: string) => {
-    if (confirm("¿Estás seguro de cancelar esta venta?")) {
-      cancelSale(id);
-      showToast("Venta cancelada", "info");
+    if (user?.role !== "admin" && user?.role !== "manager") {
+      showToast("La cancelación de ventas requiere autorización de gerente.", "error");
+      return;
+    }
+    if (confirm("¿Estás seguro de cancelar esta venta? El stock se restituirá y la acción quedará en auditoría.")) {
+      try {
+        const cancelled = cancelSale(id);
+        if (cancelled) showToast("Venta cancelada; inventario restituido", "info");
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "No se pudo cancelar la venta", "error");
+      }
     }
   };
 
@@ -147,7 +156,7 @@ function SalesContent() {
                         >
                           <Printer className="w-4 h-4" />
                         </button>
-                        {sale.status === "completed" && (
+                        {sale.status === "completed" && (user?.role === "admin" || user?.role === "manager") && (
                           <button
                             onClick={() => handleCancel(sale.id)}
                             className="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"

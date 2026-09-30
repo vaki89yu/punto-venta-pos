@@ -14,6 +14,8 @@ import { StockAdjustModal } from "@/components/inventory/StockAdjustModal";
 import { OpenFoodFactsCatalogPanel } from "@/components/inventory/OpenFoodFactsCatalogPanel";
 import { useProducts } from "@/hooks/useProducts";
 import { Product, Category } from "@/types";
+import { useAuth } from "@/contexts/AuthContext";
+import { formatQuantity, getGrossMarginPercent, isFractionalUnit, recordAuditEvent } from "@/lib/professionalFeatures";
 import { formatCurrency, generateSKU, generateBarcode } from "@/lib/utils";
 import { STORAGE_KEYS } from "@/data/seed";
 import {
@@ -32,8 +34,10 @@ import {
 
 function InventoryContent() {
   const { showToast } = useToast();
+  const { user } = useAuth();
   const { products, addProduct, updateProduct, deleteProduct, getLowStockProducts, getOutOfStockProducts } = useProducts();
   const [categories, setCategories] = React.useState<Category[]>([]);
+  const [minimumMargin, setMinimumMargin] = React.useState(10);
   
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "low" | "out">("all");
@@ -44,6 +48,13 @@ function InventoryContent() {
   React.useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
     if (stored) setCategories(JSON.parse(stored));
+    try {
+      const settings = JSON.parse(localStorage.getItem(STORAGE_KEYS.SETTINGS) || "{}");
+      const floor = Number(settings.minimumGrossMarginPercent);
+      if (Number.isFinite(floor)) setMinimumMargin(Math.max(0, Math.min(90, floor)));
+    } catch {
+      // Keep the default margin policy.
+    }
   }, []);
 
   const filteredProducts = products.filter((p) => {
@@ -57,14 +68,66 @@ function InventoryContent() {
   });
 
   const handleAddProduct = (formData: any) => {
+    const margin = getGrossMarginPercent(Number(formData.purchasePrice), Number(formData.salePrice));
+    if (margin < minimumMargin) {
+      if (user?.role !== "admin" && user?.role !== "manager") {
+        showToast(`No se puede guardar: el margen bruto es ${margin.toFixed(1)}% y el mínimo configurado es ${minimumMargin}%`, "error");
+        return;
+      }
+      const reason = window.prompt(`El margen bruto es ${margin.toFixed(1)}%, por debajo del mínimo de ${minimumMargin}%. Escribe el motivo para autorizar esta excepción:`)?.trim();
+      if (!reason) {
+        showToast("Se canceló el registro: la excepción requiere un motivo", "warning");
+        return;
+      }
+      recordAuditEvent({
+        action: "margin.guard.override",
+        entityType: "product",
+        summary: `Excepción de margen autorizada para ${formData.name}.`,
+        metadata: { marginPercent: Number(margin.toFixed(2)), minimumMarginPercent: minimumMargin, reason },
+      });
+    }
     addProduct({
       ...formData,
       sku: formData.sku || generateSKU(),
       barcode: formData.barcode || generateBarcode(),
+      stock: Number(formData.stock),
+      minStock: Number(formData.minStock),
+      tax: 16,
       isActive: true,
     });
     setShowAddModal(false);
     showToast("Producto agregado exitosamente", "success");
+  };
+
+  const handleUpdateProduct = (formData: any) => {
+    if (!editingProduct) return;
+    const margin = getGrossMarginPercent(Number(formData.purchasePrice), Number(formData.salePrice));
+    if (margin < minimumMargin) {
+      if (user?.role !== "admin" && user?.role !== "manager") {
+        showToast(`No se puede guardar: el margen bruto es ${margin.toFixed(1)}% y el mínimo es ${minimumMargin}%`, "error");
+        return;
+      }
+      const reason = window.prompt(`El margen bruto es ${margin.toFixed(1)}%, debajo del mínimo de ${minimumMargin}%. Escribe el motivo de la excepción:`)?.trim();
+      if (!reason) {
+        showToast("Se canceló el cambio de precio: la excepción requiere un motivo", "warning");
+        return;
+      }
+      recordAuditEvent({ action: "margin.guard.override", entityType: "product", entityId: editingProduct.id, summary: `Excepción de margen autorizada al editar ${formData.name}.`, metadata: { marginPercent: Number(margin.toFixed(2)), minimumMarginPercent: minimumMargin, reason } });
+    }
+    updateProduct(editingProduct.id, {
+      name: formData.name,
+      sku: formData.sku,
+      barcode: formData.barcode,
+      categoryId: formData.categoryId,
+      description: formData.description,
+      unit: formData.unit,
+      purchasePrice: Number(formData.purchasePrice),
+      salePrice: Number(formData.salePrice),
+      stock: Number(formData.stock),
+      minStock: Number(formData.minStock),
+    });
+    setEditingProduct(null);
+    showToast("Producto actualizado", "success");
   };
 
   const handleDelete = (id: string) => {
@@ -168,9 +231,9 @@ function InventoryContent() {
                         product.stock <= product.minStock ? "text-amber-600" :
                         "text-emerald-600"
                       }`}>
-                        {product.stock}
+                        {formatQuantity(product.stock, product.unit)}
                       </span>
-                      <span className="text-sm text-slate-400 ml-1">/ {product.minStock} min</span>
+                      <span className="text-sm text-slate-400 ml-1">/ {formatQuantity(product.minStock, product.unit)} mín.</span>
                     </td>
                     <td className="px-6 py-4 font-medium text-slate-900 dark:text-white">
                       {formatCurrency(product.salePrice)}
@@ -221,9 +284,23 @@ function InventoryContent() {
         <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Agregar producto" size="lg">
           <ProductForm
             categories={categories}
+            minimumMargin={minimumMargin}
             onSubmit={handleAddProduct}
             onCancel={() => setShowAddModal(false)}
           />
+        </Modal>
+
+        <Modal isOpen={!!editingProduct} onClose={() => setEditingProduct(null)} title="Editar producto" size="lg">
+          {editingProduct && (
+            <ProductForm
+              key={editingProduct.id}
+              categories={categories}
+              minimumMargin={minimumMargin}
+              initialProduct={editingProduct}
+              onSubmit={handleUpdateProduct}
+              onCancel={() => setEditingProduct(null)}
+            />
+          )}
         </Modal>
 
         <StockAdjustModal
@@ -240,18 +317,25 @@ function InventoryContent() {
   );
 }
 
-function ProductForm({ categories, onSubmit, onCancel }: { categories: Category[]; onSubmit: (data: any) => void; onCancel: () => void }) {
-  const [formData, setFormData] = useState({
-    name: "",
-    sku: generateSKU(),
-    barcode: generateBarcode(),
-    categoryId: "",
-    purchasePrice: "",
-    salePrice: "",
-    stock: "",
-    minStock: "5",
-    description: "",
-  });
+function ProductForm({ categories, minimumMargin, initialProduct, onSubmit, onCancel }: { categories: Category[]; minimumMargin: number; initialProduct?: Product; onSubmit: (data: any) => void; onCancel: () => void }) {
+  const [formData, setFormData] = useState(() => ({
+    name: initialProduct?.name || "",
+    sku: initialProduct?.sku || generateSKU(),
+    barcode: initialProduct?.barcode || generateBarcode(),
+    categoryId: initialProduct?.categoryId || "",
+    unit: initialProduct?.unit || "pieza",
+    purchasePrice: initialProduct ? String(initialProduct.purchasePrice) : "",
+    salePrice: initialProduct ? String(initialProduct.salePrice) : "",
+    stock: initialProduct ? String(initialProduct.stock) : "",
+    minStock: initialProduct ? String(initialProduct.minStock) : "5",
+    description: initialProduct?.description || "",
+  }));
+
+  const parsedCost = Number(formData.purchasePrice);
+  const parsedPrice = Number(formData.salePrice);
+  const currentMargin = formData.purchasePrice && formData.salePrice
+    ? getGrossMarginPercent(parsedCost, parsedPrice)
+    : null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -259,8 +343,8 @@ function ProductForm({ categories, onSubmit, onCancel }: { categories: Category[
       ...formData,
       purchasePrice: parseFloat(formData.purchasePrice),
       salePrice: parseFloat(formData.salePrice),
-      stock: parseInt(formData.stock),
-      minStock: parseInt(formData.minStock),
+      stock: Number(formData.stock),
+      minStock: Number(formData.minStock),
     });
   };
 
@@ -300,6 +384,21 @@ function ProductForm({ categories, onSubmit, onCancel }: { categories: Category[
             ))}
           </select>
         </div>
+        <div className="col-span-2">
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Unidad de venta *</label>
+          <select
+            value={formData.unit}
+            onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
+            className="w-full px-4 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+          >
+            <option value="pieza">Pieza (cantidad entera)</option>
+            <option value="kg">Kilogramo (venta por peso)</option>
+            <option value="g">Gramo (venta fraccionada)</option>
+            <option value="litro">Litro (venta fraccionada)</option>
+            <option value="ml">Mililitro (venta fraccionada)</option>
+          </select>
+          <p className="mt-1 text-xs text-slate-500">Para kg, g, litros o ml, el punto de venta permite capturar hasta 3 decimales.</p>
+        </div>
         <Input
           label="Precio de compra *"
           type="number"
@@ -311,21 +410,31 @@ function ProductForm({ categories, onSubmit, onCancel }: { categories: Category[
         <Input
           label="Precio de venta *"
           type="number"
+          min="0.01"
           step="0.01"
           value={formData.salePrice}
           onChange={(e) => setFormData({ ...formData, salePrice: e.target.value })}
           required
         />
+        {currentMargin !== null && (
+          <div className={`col-span-2 rounded-xl border px-4 py-3 text-sm ${currentMargin >= minimumMargin ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200" : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"}`}>
+            Margen bruto estimado: <strong>{currentMargin.toFixed(1)}%</strong> · mínimo configurado: <strong>{minimumMargin}%</strong>
+          </div>
+        )}
         <Input
-          label="Stock inicial *"
+          label={`Stock inicial * (${formData.unit})`}
           type="number"
+          min="0"
+          step={isFractionalUnit(formData.unit) ? "0.001" : "1"}
           value={formData.stock}
           onChange={(e) => setFormData({ ...formData, stock: e.target.value })}
           required
         />
         <Input
-          label="Stock mínimo"
+          label={`Stock mínimo (${formData.unit})`}
           type="number"
+          min="0"
+          step={isFractionalUnit(formData.unit) ? "0.001" : "1"}
           value={formData.minStock}
           onChange={(e) => setFormData({ ...formData, minStock: e.target.value })}
         />

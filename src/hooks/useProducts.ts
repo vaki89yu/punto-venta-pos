@@ -12,7 +12,9 @@ import {
   deleteProductFromStore,
   findByBarcode,
   refresh,
+  getSnapshot as getCurrentProducts,
 } from "@/lib/productStore";
+import { recordAuditEvent } from "@/lib/professionalFeatures";
 
 /**
  * Hook de productos con estado global compartido.
@@ -36,17 +38,52 @@ export function useProducts() {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      return addProductToStore(newProduct);
+      const saved = addProductToStore(newProduct);
+      recordAuditEvent({
+        action: "product.created",
+        entityType: "product",
+        entityId: saved.id,
+        summary: `Producto agregado al catálogo: ${saved.name}.`,
+        metadata: { stock: saved.stock, salePrice: saved.salePrice, purchasePrice: saved.purchasePrice },
+      });
+      return saved;
     },
     []
   );
 
   const updateProduct = useCallback((id: string, updates: Partial<Product>) => {
+    const before = getCurrentProducts().find((product) => product.id === id);
     updateProductInStore(id, updates);
+    if (before) {
+      const changedFields = Object.keys(updates).filter((key) => key !== "updatedAt");
+      recordAuditEvent({
+        action: changedFields.includes("salePrice") ? "product.price.updated" : "product.updated",
+        entityType: "product",
+        entityId: id,
+        summary: `Producto actualizado: ${before.name} (${changedFields.join(", ") || "sin cambios"}).`,
+        metadata: {
+          changedFields: changedFields.join(", "),
+          previousStock: before.stock,
+          stock: updates.stock ?? before.stock,
+          previousSalePrice: before.salePrice,
+          salePrice: updates.salePrice ?? before.salePrice,
+        },
+      });
+    }
   }, []);
 
   const deleteProduct = useCallback((id: string) => {
+    const product = getCurrentProducts().find((item) => item.id === id);
     deleteProductFromStore(id);
+    if (product) {
+      recordAuditEvent({
+        action: "product.deleted",
+        entityType: "product",
+        entityId: id,
+        summary: `Producto retirado del catálogo: ${product.name}.`,
+        metadata: { sku: product.sku, stock: product.stock },
+      });
+    }
   }, []);
 
   const getProductById = useCallback(

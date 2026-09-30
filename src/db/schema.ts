@@ -71,8 +71,8 @@ export const products = pgTable("products", {
   purchasePrice: decimal("purchase_price", { precision: 12, scale: 2 }).notNull(),
   salePrice: decimal("sale_price", { precision: 12, scale: 2 }).notNull(),
   discountPrice: decimal("discount_price", { precision: 12, scale: 2 }),
-  stock: integer("stock").notNull().default(0),
-  minStock: integer("min_stock").notNull().default(5),
+  stock: decimal("stock", { precision: 12, scale: 3 }).notNull().default("0"),
+  minStock: decimal("min_stock", { precision: 12, scale: 3 }).notNull().default("5"),
   unit: varchar("unit", { length: 50 }).notNull().default("pieza"),
   supplierId: uuid("supplier_id").references(() => suppliers.id),
   tax: decimal("tax", { precision: 5, scale: 2 }).notNull().default("16"),
@@ -121,12 +121,13 @@ export const saleItems = pgTable("sale_items", {
   id: uuid("id").defaultRandom().primaryKey(),
   saleId: uuid("sale_id").notNull().references(() => sales.id, { onDelete: "cascade" }),
   productId: uuid("product_id").notNull().references(() => products.id),
-  quantity: integer("quantity").notNull(),
+  quantity: decimal("quantity", { precision: 12, scale: 3 }).notNull(),
   price: decimal("price", { precision: 12, scale: 2 }).notNull(),
   discount: decimal("discount", { precision: 12, scale: 2 }).notNull().default("0"),
   tax: decimal("tax", { precision: 12, scale: 2 }).notNull().default("0"),
   subtotal: decimal("subtotal", { precision: 12, scale: 2 }).notNull(),
   total: decimal("total", { precision: 12, scale: 2 }).notNull(),
+  lotAllocations: jsonb("lot_allocations").$type<{ lotId: string; lotCode: string; quantity: number }[]>(),
 });
 
 // Inventory Movements Table
@@ -134,9 +135,9 @@ export const inventoryMovements = pgTable("inventory_movements", {
   id: uuid("id").defaultRandom().primaryKey(),
   productId: uuid("product_id").notNull().references(() => products.id),
   type: inventoryMovementTypeEnum("type").notNull(),
-  quantity: integer("quantity").notNull(),
-  previousStock: integer("previous_stock").notNull(),
-  newStock: integer("new_stock").notNull(),
+  quantity: decimal("quantity", { precision: 12, scale: 3 }).notNull(),
+  previousStock: decimal("previous_stock", { precision: 12, scale: 3 }).notNull(),
+  newStock: decimal("new_stock", { precision: 12, scale: 3 }).notNull(),
   reason: text("reason"),
   saleId: uuid("sale_id").references(() => sales.id),
   userId: uuid("user_id").notNull().references(() => users.id),
@@ -190,7 +191,7 @@ export const returnItems = pgTable("return_items", {
   returnId: uuid("return_id").notNull().references(() => returns.id, { onDelete: "cascade" }),
   saleItemId: uuid("sale_item_id").notNull().references(() => saleItems.id),
   productId: uuid("product_id").notNull().references(() => products.id),
-  quantity: integer("quantity").notNull(),
+  quantity: decimal("quantity", { precision: 12, scale: 3 }).notNull(),
   price: decimal("price", { precision: 12, scale: 2 }).notNull(),
   refundAmount: decimal("refund_amount", { precision: 12, scale: 2 }).notNull(),
 });
@@ -208,7 +209,51 @@ export const storeSettings = pgTable("store_settings", {
   currency: varchar("currency", { length: 3 }).notNull().default("MXN"),
   ticketMessage: text("ticket_message"),
   theme: themeEnum("theme").notNull().default("system"),
+  minimumGrossMarginPercent: decimal("minimum_gross_margin_percent", { precision: 5, scale: 2 }).notNull().default("10"),
+  defaultCoverageDays: integer("default_coverage_days").notNull().default(14),
+  defaultLeadTimeDays: integer("default_lead_time_days").notNull().default(7),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Inventory lots support traceability and FEFO stock consumption.
+export const inventoryLots = pgTable("inventory_lots", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  productId: uuid("product_id").notNull().references(() => products.id),
+  lotCode: varchar("lot_code", { length: 100 }).notNull(),
+  receivedQuantity: decimal("received_quantity", { precision: 12, scale: 3 }).notNull(),
+  remainingQuantity: decimal("remaining_quantity", { precision: 12, scale: 3 }).notNull(),
+  expiresAt: timestamp("expires_at"),
+  unitCost: decimal("unit_cost", { precision: 12, scale: 2 }).notNull(),
+  receivedBy: uuid("received_by").references(() => users.id),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+});
+
+// Local audit history can later be migrated into this append-only server table.
+export const auditEvents = pgTable("audit_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  actorId: uuid("actor_id").references(() => users.id),
+  actorName: varchar("actor_name", { length: 255 }).notNull(),
+  action: varchar("action", { length: 120 }).notNull(),
+  entityType: varchar("entity_type", { length: 80 }).notNull(),
+  entityId: varchar("entity_id", { length: 120 }),
+  summary: text("summary").notNull(),
+  metadata: jsonb("metadata").$type<Record<string, string | number | boolean | null>>(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// These are request records only; an authorized PAC must issue and stamp CFDI.
+export const invoiceRequests = pgTable("invoice_requests", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  saleId: uuid("sale_id").notNull().unique().references(() => sales.id),
+  rfc: varchar("rfc", { length: 13 }).notNull(),
+  legalName: varchar("legal_name", { length: 255 }).notNull(),
+  postalCode: varchar("postal_code", { length: 5 }).notNull(),
+  fiscalRegime: varchar("fiscal_regime", { length: 3 }).notNull(),
+  cfdiUse: varchar("cfdi_use", { length: 4 }).notNull(),
+  email: varchar("email", { length: 255 }),
+  status: varchar("status", { length: 32 }).notNull().default("pending_pac"),
+  requestedBy: varchar("requested_by", { length: 255 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 // Relations

@@ -10,6 +10,7 @@ import { ProductGrid } from "@/components/pos/ProductGrid";
 import { Cart } from "@/components/pos/Cart";
 import { InnovativeCheckout } from "@/components/pos/InnovativeCheckout";
 import { QuickProductModal } from "@/components/pos/QuickProductModal";
+import { WeighedProductModal } from "@/components/pos/WeighedProductModal";
 import { BarcodeScanner, ScanFeedback } from "@/components/scanner/BarcodeScanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -17,10 +18,11 @@ import { Modal } from "@/components/ui/Modal";
 import { useProducts } from "@/hooks/useProducts";
 import { useUsbScanner } from "@/hooks/useUsbScanner";
 import { normalizeBarcode } from "@/lib/productStore";
+import { formatQuantity, getSellableStock, isFractionalUnit } from "@/lib/professionalFeatures";
 import { createUsbInputReader } from "@/lib/usbInputReader";
 import { useSales } from "@/hooks/useSales";
 import { useAuth } from "@/contexts/AuthContext";
-import { Product, Customer, Category } from "@/types";
+import { Product, Customer, Category, PaymentMethod } from "@/types";
 import { STORAGE_KEYS } from "@/data/seed";
 import { formatCurrency } from "@/lib/utils";
 import {
@@ -37,9 +39,9 @@ import {
 function POSContent() {
   const { showToast } = useToast();
   const { user } = useAuth();
-  const { products, getProductByBarcode, searchProducts, addProduct, updateProduct } = useProducts();
+  const { products, getProductByBarcode, searchProducts, addProduct } = useProducts();
   const { createSale } = useSales();
-  const { items, addItem, clearCart, subtotal, tax, total, itemCount } = useCart();
+  const { items, addItem, clearCart, subtotal, discount, tax, total, itemCount } = useCart();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -47,6 +49,7 @@ function POSContent() {
 
   const [showScanner, setShowScanner] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
+  const [weighedProduct, setWeighedProduct] = useState<Product | null>(null);
   const [scannerContinuous, setScannerContinuous] = useState(false);
 
   const [barcodeInput, setBarcodeInput] = useState("");
@@ -64,6 +67,28 @@ function POSContent() {
 
   // Vista móvil: productos o carrito
   const [mobileView, setMobileView] = useState<"products" | "cart">("products");
+
+  const addProductToCart = useCallback((product: Product, quantity?: number) => {
+    if (isFractionalUnit(product.unit) && quantity === undefined) {
+      setWeighedProduct(product);
+      return true;
+    }
+    const added = addItem(product, quantity);
+    if (!added) {
+      showToast(`Stock disponible insuficiente: ${formatQuantity(getSellableStock(product.stock, product.id), product.unit)}`, "warning");
+      return false;
+    }
+    return true;
+  }, [addItem, showToast]);
+
+  const confirmWeighedProduct = (product: Product, quantity: number) => {
+    if (addItem(product, quantity)) {
+      setScannedCount((count) => count + 1);
+      showToast(`${product.name} · ${formatQuantity(quantity, product.unit)} agregado`, "success");
+    } else {
+      showToast("No hay suficiente stock disponible para esa cantidad", "warning");
+    }
+  };
 
   useEffect(() => {
     const storedCategories = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
@@ -116,14 +141,15 @@ function POSContent() {
       lastScanSource.current = source;
       const product = getProductByBarcode(barcode);
 
-      // CASO 1: El producto YA EXISTE → agregar al carrito para vender
+      // CASO 1: El producto YA EXISTE → agregar al carrito o solicitar el peso
       if (product) {
-        if (product.stock > 0) {
-          addItem(product);
-          setScannedCount((c) => c + 1);
+        const availableStock = getSellableStock(product.stock, product.id);
+        if (availableStock > 0) {
+          addProductToCart(product);
+          if (!isFractionalUnit(product.unit)) setScannedCount((c) => c + 1);
           setScanFeedback({ type: "found", product, barcode });
           playBeep(true);
-          showToast(`${product.name} · ${formatCurrency(product.salePrice)}`, "success");
+          showToast(`${product.name} · ${formatCurrency(product.salePrice)} / ${product.unit}`, "success");
 
           setTimeout(() => setScanFeedback(null), 1300);
           if (source === "camera" && !scannerContinuous) {
@@ -154,7 +180,7 @@ function POSContent() {
         }, 1100);
       }
     },
-    [getProductByBarcode, addItem, showToast, scannerContinuous, playBeep]
+    [getProductByBarcode, addProductToCart, showToast, scannerContinuous, playBeep]
   );
 
   const usbScannerEnabled = !!user && !showScanner && !showCheckout &&
@@ -212,9 +238,11 @@ function POSContent() {
     const created = addProduct(productData);
     setNewBarcode(null);
     if (addToCart) {
-      addItem(created);
-      setScannedCount((c) => c + 1);
-      showToast(`"${created.name}" registrado y agregado al carrito`, "success");
+      addProductToCart(created);
+      if (!isFractionalUnit(created.unit)) setScannedCount((c) => c + 1);
+      showToast(isFractionalUnit(created.unit)
+        ? `"${created.name}" registrado; captura el peso para venderlo`
+        : `"${created.name}" registrado y agregado al carrito`, "success");
     } else {
       showToast(`"${created.name}" registrado en inventario`, "success");
     }
@@ -230,33 +258,33 @@ function POSContent() {
   };
 
   const handleCheckout = (paymentData: {
-    method: string;
+    method: PaymentMethod;
+    ticketNumber: string;
     cashReceived?: number;
     change?: number;
-    paymentDetails: { method: "cash" | "card" | "transfer"; amount: number; reference?: string }[];
-  }) => {
-    if (!user) return;
-    createSale(
-      items,
-      selectedCustomer,
-      user.id,
-      paymentData.method as any,
-      paymentData.paymentDetails,
-      paymentData.cashReceived,
-      paymentData.change
-    );
-
-    // Descontar el stock vendido del inventario
-    items.forEach((item) => {
-      const current = getProductByBarcode(item.product.barcode) || item.product;
-      const newStock = Math.max(0, current.stock - item.quantity);
-      updateProduct(current.id, { stock: newStock });
-    });
-
-    clearCart();
-    setShowCheckout(false);
-    setMobileView("products");
-    showToast("Venta completada · Inventario actualizado", "success");
+    paymentDetails: { method: "cash" | "card" | "transfer" | "qr"; amount: number; reference?: string }[];
+  }): boolean => {
+    if (!user) return false;
+    try {
+      createSale(
+        items,
+        selectedCustomer,
+        user.id,
+        paymentData.method,
+        paymentData.paymentDetails,
+        paymentData.cashReceived,
+        paymentData.change,
+        paymentData.ticketNumber
+      );
+      clearCart();
+      setSelectedCustomer(null);
+      setMobileView("products");
+      showToast("Venta guardada · inventario y auditoría actualizados", "success");
+      return true;
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "No se pudo completar la venta", "error");
+      return false;
+    }
   };
 
   return (
@@ -348,7 +376,7 @@ function POSContent() {
 
           {/* Grid de productos */}
           <div className="flex-1 min-h-0">
-            <ProductGrid products={products} categories={categories} onAddToCart={addItem} />
+            <ProductGrid products={products} categories={categories} onAddToCart={addProductToCart} />
           </div>
         </div>
 
@@ -358,7 +386,12 @@ function POSContent() {
             mobileView === "products" ? "hidden lg:block" : "block"
           }`}
         >
-          <Cart customers={customers} onCheckout={() => setShowCheckout(true)} />
+          <Cart
+            customers={customers}
+            selectedCustomer={selectedCustomer}
+            onCustomerChange={setSelectedCustomer}
+            onCheckout={() => setShowCheckout(true)}
+          />
         </div>
       </div>
 
@@ -416,12 +449,20 @@ function POSContent() {
         onScanAgain={handleScanAgain}
       />
 
+      <WeighedProductModal
+        key={weighedProduct?.id || "weighed-product-closed"}
+        product={weighedProduct}
+        onClose={() => setWeighedProduct(null)}
+        onConfirm={confirmWeighedProduct}
+      />
+
       {/* Checkout */}
       <InnovativeCheckout
         isOpen={showCheckout}
         onClose={() => setShowCheckout(false)}
         total={total}
         subtotal={subtotal}
+        discount={discount}
         tax={tax}
         items={items}
         customer={selectedCustomer}
@@ -443,8 +484,8 @@ function POSContent() {
             <button
               key={p.id}
               onClick={() => {
-                if (p.stock > 0) {
-                  addItem(p);
+                if (getSellableStock(p.stock, p.id) > 0) {
+                  addProductToCart(p);
                   playBeep(true);
                   showToast(`${p.name} agregado`, "success");
                 }
@@ -484,7 +525,7 @@ function POSContent() {
               <button
                 key={product.id}
                 onClick={() => {
-                  addItem(product);
+                  addProductToCart(product);
                   setShowSearchModal(false);
                   setSearchResults([]);
                 }}

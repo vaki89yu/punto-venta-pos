@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { generateId } from "@/lib/utils";
+import { recordAuditEvent } from "@/lib/professionalFeatures";
 
 export interface PurchaseOrderItem {
   productId: string;
@@ -54,6 +55,13 @@ export function usePurchaseOrders() {
     };
     const updated = [newOrder, ...orders];
     saveOrders(updated);
+    recordAuditEvent({
+      action: "purchase_order.created",
+      entityType: "purchase_order",
+      entityId: newOrder.id,
+      summary: `Orden ${newOrder.orderNumber} creada para ${newOrder.supplierName}.`,
+      metadata: { total: newOrder.total, lineCount: newOrder.items.length },
+    });
     return newOrder;
   }, [orders, saveOrders]);
 
@@ -62,6 +70,16 @@ export function usePurchaseOrders() {
       o.id === id ? { ...o, status, receivedAt: status === "received" ? new Date() : o.receivedAt } : o
     );
     saveOrders(updated);
+    const order = orders.find((item) => item.id === id);
+    if (order) {
+      recordAuditEvent({
+        action: `purchase_order.${status}`,
+        entityType: "purchase_order",
+        entityId: id,
+        summary: `Orden ${order.orderNumber} cambió a ${status}.`,
+        metadata: { total: order.total },
+      });
+    }
   }, [orders, saveOrders]);
 
   const getPendingOrders = useCallback(() => {

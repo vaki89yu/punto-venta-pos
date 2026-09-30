@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Sale, SaleItem, CartItem, Customer, PaymentMethod } from "@/types";
+import { Sale, SaleItem, CartItem, Customer, PaymentMethod, Product } from "@/types";
 import { STORAGE_KEYS } from "@/data/seed";
 import { generateId } from "@/lib/utils";
 import { updateProductInStore } from "@/lib/productStore";
+import { consumeLotsFEFO, getSellableStock, recordAuditEvent, restoreLotsFromSale } from "@/lib/professionalFeatures";
 
 export function useSales() {
   const [sales, setSales] = useState<Sale[]>([]);
@@ -38,28 +39,37 @@ export function useSales() {
     paymentMethod: PaymentMethod,
     paymentDetails: { method: "cash" | "card" | "transfer" | "qr"; amount: number; reference?: string }[],
     cashReceived?: number,
-    change?: number
+    change?: number,
+    ticketNumber?: string
   ): Sale => {
-    const subtotal = cartItems.reduce((sum, item) => {
-      const itemTotal = item.product.salePrice * item.quantity;
-      const itemDiscount = itemTotal * (item.discount / 100);
-      return sum + (itemTotal - itemDiscount);
-    }, 0);
+    const storedProducts: Record<string, Product> = {};
+    try {
+      const parsed: Product[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.PRODUCTS) || "[]");
+      for (const product of parsed) storedProducts[product.id] = product;
+    } catch {
+      // Keep the sale path usable with the product snapshot already held by the cart.
+    }
 
-    const discount = cartItems.reduce((sum, item) => {
-      const itemTotal = item.product.salePrice * item.quantity;
-      return sum + (itemTotal * (item.discount / 100));
-    }, 0);
+    const requestedByProduct = new Map<string, number>();
+    for (const item of cartItems) {
+      requestedByProduct.set(item.product.id, (requestedByProduct.get(item.product.id) || 0) + item.quantity);
+    }
+    for (const [productId, requestedQuantity] of requestedByProduct) {
+      const product = storedProducts[productId] || cartItems.find((item) => item.product.id === productId)?.product;
+      if (!product) throw new Error("Uno de los productos del carrito ya no existe.");
+      const available = getSellableStock(product.stock, productId);
+      if (requestedQuantity > available + 0.0001) {
+        throw new Error(`Stock insuficiente de ${product.name}. Disponible: ${available} ${product.unit}.`);
+      }
+    }
 
-    const taxRate = 0.16;
-    const tax = subtotal * taxRate;
-    const total = subtotal + tax;
-
+    const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
     const saleItems: SaleItem[] = cartItems.map((item) => {
-      const itemSubtotal = item.product.salePrice * item.quantity;
-      const itemDiscount = itemSubtotal * (item.discount / 100);
-      const itemTax = (itemSubtotal - itemDiscount) * taxRate;
-      const itemTotal = itemSubtotal - itemDiscount + itemTax;
+      const itemSubtotal = roundMoney(item.product.salePrice * item.quantity);
+      const itemDiscount = roundMoney(itemSubtotal * (item.discount / 100));
+      const taxableAmount = roundMoney(itemSubtotal - itemDiscount);
+      const itemTax = roundMoney(taxableAmount * (Math.max(0, item.product.tax || 0) / 100));
+      const itemTotal = roundMoney(taxableAmount + itemTax);
 
       return {
         id: generateId(),
@@ -74,9 +84,14 @@ export function useSales() {
       };
     });
 
+    const subtotal = roundMoney(saleItems.reduce((sum, item) => sum + item.subtotal - item.discount, 0));
+    const discount = roundMoney(saleItems.reduce((sum, item) => sum + item.discount, 0));
+    const tax = roundMoney(saleItems.reduce((sum, item) => sum + item.tax, 0));
+    const total = roundMoney(saleItems.reduce((sum, item) => sum + item.total, 0));
+
     const newSale: Sale = {
       id: generateId(),
-      ticketNumber: generateTicketNumber(),
+      ticketNumber: ticketNumber || generateTicketNumber(),
       customerId: customer?.id,
       userId,
       items: saleItems,
@@ -93,13 +108,16 @@ export function useSales() {
       updatedAt: new Date(),
     };
 
-    // ─── Descontar stock del inventario global ───
-    // Cada producto vendido reduce su stock y notifica a toda la app.
-    cartItems.forEach((ci) => {
-      updateProductInStore(ci.product.id, {
-        stock: Math.max(0, ci.product.stock - ci.quantity),
+    // Descontar stock una sola vez por producto y consumir lotes FEFO cuando estén registrados.
+    for (const [productId, quantity] of requestedByProduct) {
+      const product = storedProducts[productId] || cartItems.find((item) => item.product.id === productId)!.product;
+      const allocations = consumeLotsFEFO(productId, quantity);
+      const saleItem = saleItems.find((item) => item.productId === productId);
+      if (saleItem && allocations.length > 0) saleItem.lotAllocations = allocations;
+      updateProductInStore(productId, {
+        stock: Math.max(0, product.stock - quantity),
       });
-    });
+    }
 
     // Update sale items with the sale ID
     saleItems.forEach((item) => {
@@ -108,6 +126,14 @@ export function useSales() {
 
     const updatedSales = [newSale, ...sales];
     saveSales(updatedSales);
+    recordAuditEvent({
+      action: "sale.completed",
+      entityType: "sale",
+      entityId: newSale.id,
+      summary: `Venta ${newSale.ticketNumber} completada por $${newSale.total.toFixed(2)}.`,
+      metadata: { total: newSale.total, paymentMethod: newSale.paymentMethod, itemCount: cartItems.length },
+      actorId: userId,
+    });
 
     // Update customer stats if customer exists
     if (customer) {
@@ -148,11 +174,43 @@ export function useSales() {
     return sales.find((s) => s.id === id);
   }, [sales]);
 
-  const cancelSale = useCallback((id: string) => {
-    const updatedSales = sales.map((s) =>
-      s.id === id ? { ...s, status: "cancelled" as const, updatedAt: new Date() } : s
+  const cancelSale = useCallback((id: string): boolean => {
+    const sale = sales.find((item) => item.id === id);
+    if (!sale || sale.status !== "completed") return false;
+
+    const returns = JSON.parse(localStorage.getItem(STORAGE_KEYS.RETURNS) || "[]") as { saleId?: string }[];
+    if (returns.some((record) => record.saleId === sale.id)) {
+      throw new Error("No se puede cancelar un ticket con devoluciones; procesa el ajuste con un gerente.");
+    }
+
+    const quantities = new Map<string, number>();
+    for (const item of sale.items) {
+      quantities.set(item.productId, (quantities.get(item.productId) || 0) + item.quantity);
+      restoreLotsFromSale(item.lotAllocations || [], item.quantity);
+    }
+    let products: Product[] = [];
+    try {
+      products = JSON.parse(localStorage.getItem(STORAGE_KEYS.PRODUCTS) || "[]");
+    } catch {
+      products = [];
+    }
+    for (const [productId, quantity] of quantities) {
+      const product = products.find((item) => item.id === productId);
+      if (product) updateProductInStore(productId, { stock: product.stock + quantity });
+    }
+
+    const updatedSales = sales.map((item) =>
+      item.id === id ? { ...item, status: "cancelled" as const, updatedAt: new Date() } : item
     );
     saveSales(updatedSales);
+    recordAuditEvent({
+      action: "sale.cancelled",
+      entityType: "sale",
+      entityId: id,
+      summary: `Venta ${sale.ticketNumber} cancelada; stock restituido al inventario.`,
+      metadata: { total: sale.total, restoredLineCount: sale.items.length },
+    });
+    return true;
   }, [sales, saveSales]);
 
   const getSalesStats = useCallback(() => {

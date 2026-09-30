@@ -23,6 +23,7 @@ import {
 import { Product, Customer, Sale } from "@/types";
 import { STORAGE_KEYS } from "@/data/seed";
 import { NotificationCenter } from "./NotificationCenter";
+import { OfflineStatus } from "./OfflineStatus";
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -105,6 +106,7 @@ export function Header({ onMenuClick }: HeaderProps) {
       "/suppliers": "Proveedores",
       "/cash": "Control de Caja",
       "/settings": "Configuración",
+      "/operations": "Radar inteligente",
     };
     return titles[pathname] || "Mi Tienda POS";
   };
@@ -148,6 +150,8 @@ export function Header({ onMenuClick }: HeaderProps) {
             >
               <Search className="w-5 h-5" />
             </button>
+
+            <OfflineStatus />
 
             {/* Theme toggle */}
             <button

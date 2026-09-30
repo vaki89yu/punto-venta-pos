@@ -48,10 +48,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!user) return false;
     
     const permissions: Record<string, string[]> = {
-      admin: ["dashboard", "pos", "inventory", "sales", "customers", "suppliers", "reports", "cash", "settings", "users"],
-      manager: ["dashboard", "pos", "inventory", "sales", "customers", "suppliers", "reports", "cash"],
+      admin: ["dashboard", "pos", "inventory", "sales", "customers", "suppliers", "reports", "cash", "settings", "users", "operations"],
+      manager: ["dashboard", "pos", "inventory", "sales", "customers", "suppliers", "reports", "cash", "operations"],
       cashier: ["pos", "cash", "customers", "sales"],
-      inventory: ["inventory", "suppliers", "products"],
+      inventory: ["inventory", "suppliers", "products", "operations"],
     };
     
     return permissions[user.role]?.includes(module) || false;

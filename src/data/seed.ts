@@ -39,6 +39,9 @@ export const demoStoreSettings: StoreSettings = {
   taxRate: 16,
   currency: "MXN",
   ticketMessage: "¡Gracias por su compra! Vuelva pronto. ¡Dios le bendiga!",
+  minimumGrossMarginPercent: 10,
+  defaultCoverageDays: 14,
+  defaultLeadTimeDays: 7,
   theme: "light",
 };
 
@@ -49,6 +52,7 @@ export const STORAGE_KEYS = {
   CUSTOMERS: "pos_customers",
   SUPPLIERS: "pos_suppliers",
   SALES: "pos_sales",
+  RETURNS: "pos_returns",
   USERS: "pos_users",
   SETTINGS: "pos_settings",
   CURRENT_USER: "pos_current_user",
@@ -58,6 +62,9 @@ export const STORAGE_KEYS = {
   APARTADOS: "pos_apartados",
   PROMOTIONS: "pos_promotions",
   RECIPES: "pos_recipes",
+  INVENTORY_LOTS: "pos_inventory_lots_v1",
+  AUDIT_LOG: "pos_audit_log_v1",
+  INVOICE_REQUESTS: "pos_invoice_requests_v1",
 };
 
 // Inicializar datos de demostración
@@ -101,5 +108,14 @@ export function initializeDemoData() {
   }
   if (!localStorage.getItem(STORAGE_KEYS.RECIPES)) {
     localStorage.setItem(STORAGE_KEYS.RECIPES, JSON.stringify([]));
+  }
+  if (!localStorage.getItem(STORAGE_KEYS.INVENTORY_LOTS)) {
+    localStorage.setItem(STORAGE_KEYS.INVENTORY_LOTS, JSON.stringify([]));
+  }
+  if (!localStorage.getItem(STORAGE_KEYS.AUDIT_LOG)) {
+    localStorage.setItem(STORAGE_KEYS.AUDIT_LOG, JSON.stringify([]));
+  }
+  if (!localStorage.getItem(STORAGE_KEYS.INVOICE_REQUESTS)) {
+    localStorage.setItem(STORAGE_KEYS.INVOICE_REQUESTS, JSON.stringify([]));
   }
 }

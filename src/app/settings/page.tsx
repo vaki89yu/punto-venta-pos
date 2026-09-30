@@ -22,18 +22,38 @@ function SettingsContent() {
     name: "Mi Tienda",
     taxRate: 16,
     currency: "MXN",
+    minimumGrossMarginPercent: 10,
+    defaultCoverageDays: 14,
+    defaultLeadTimeDays: 7,
     theme: "system",
   });
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
     if (stored) {
-      setSettings(JSON.parse(stored));
+      setSettings((current) => ({ ...current, ...JSON.parse(stored) }));
     }
   }, []);
 
   const handleSave = () => {
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+    const floor = Number(settings.minimumGrossMarginPercent ?? 10);
+    const coverage = Number(settings.defaultCoverageDays ?? 14);
+    const lead = Number(settings.defaultLeadTimeDays ?? 7);
+    if (!Number.isFinite(floor) || floor < 0 || floor > 90) {
+      showToast("El margen mínimo debe estar entre 0% y 90%", "warning");
+      return;
+    }
+    if (!Number.isInteger(coverage) || coverage < 1 || coverage > 180) {
+      showToast("La cobertura objetivo debe ser de 1 a 180 días", "warning");
+      return;
+    }
+    if (!Number.isInteger(lead) || lead < 0 || lead > 90) {
+      showToast("El tiempo de entrega debe ser de 0 a 90 días", "warning");
+      return;
+    }
+    const nextSettings = { ...settings, minimumGrossMarginPercent: floor, defaultCoverageDays: coverage, defaultLeadTimeDays: lead };
+    setSettings(nextSettings);
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
     showToast("Configuración guardada", "success");
   };
 
@@ -148,6 +168,42 @@ function SettingsContent() {
                   <span className="text-sm font-medium">Sistema</span>
                 </button>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader title="Política de margen y reposición" />
+            <CardContent className="space-y-4">
+              <Input
+                label="Margen bruto mínimo (%)"
+                type="number"
+                min="0"
+                max="90"
+                step="0.5"
+                value={settings.minimumGrossMarginPercent ?? 10}
+                onChange={(e) => setSettings({ ...settings, minimumGrossMarginPercent: Number(e.target.value) })}
+              />
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  label="Cobertura deseada (días)"
+                  type="number"
+                  min="1"
+                  max="180"
+                  step="1"
+                  value={settings.defaultCoverageDays ?? 14}
+                  onChange={(e) => setSettings({ ...settings, defaultCoverageDays: Number(e.target.value) })}
+                />
+                <Input
+                  label="Entrega proveedor (días)"
+                  type="number"
+                  min="0"
+                  max="90"
+                  step="1"
+                  value={settings.defaultLeadTimeDays ?? 7}
+                  onChange={(e) => setSettings({ ...settings, defaultLeadTimeDays: Number(e.target.value) })}
+                />
+              </div>
+              <p className="text-xs leading-5 text-slate-500">El margen se usa para limitar descuentos y alertar sobre precios bajos. La cobertura y entrega alimentan las sugerencias de compra del Radar.</p>
             </CardContent>
           </Card>
 

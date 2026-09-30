@@ -32,24 +32,39 @@ interface InnovativeCheckoutProps {
   onClose: () => void;
   total: number;
   subtotal: number;
+  discount: number;
   tax: number;
   items: CartItem[];
   customer: Customer | null;
   onComplete: (paymentData: {
     method: PaymentMethod;
+    ticketNumber: string;
     cashReceived?: number;
     change?: number;
-    paymentDetails: { method: "cash" | "card" | "transfer"; amount: number; reference?: string }[];
-  }) => void;
+    paymentDetails: { method: "cash" | "card" | "transfer" | "qr"; amount: number; reference?: string }[];
+  }) => boolean;
 }
 
 type PaymentStep = "method" | "details" | "qr" | "split" | "confirmation";
+
+type TicketSnapshot = {
+  items: CartItem[];
+  customer: Customer | null;
+  subtotal: number;
+  discount: number;
+  tax: number;
+  total: number;
+  paymentMethod: PaymentMethod;
+  cashReceived?: number;
+  change?: number;
+};
 
 export function InnovativeCheckout({
   isOpen,
   onClose,
   total,
   subtotal,
+  discount,
   tax,
   items,
   customer,
@@ -61,7 +76,8 @@ export function InnovativeCheckout({
   const [splitPayments, setSplitPayments] = useState<{ method: "cash" | "card" | "transfer"; amount: number }[]>([]);
   const [showTicket, setShowTicket] = useState(false);
   const [ticketNumber, setTicketNumber] = useState("");
-  const [paymentDataState, setPaymentDataState] = useState<any>(null);
+  const [ticketSnapshot, setTicketSnapshot] = useState<TicketSnapshot | null>(null);
+  const [checkoutError, setCheckoutError] = useState("");
 
   const change = parseFloat(cashReceived) - total;
   const remainingForSplit = total - splitPayments.reduce((sum, p) => sum + p.amount, 0);
@@ -73,6 +89,9 @@ export function InnovativeCheckout({
       setCashReceived("");
       setSplitPayments([]);
       setShowTicket(false);
+      setTicketSnapshot(null);
+      setTicketNumber("");
+      setCheckoutError("");
     }
   }, [isOpen]);
 
@@ -88,28 +107,40 @@ export function InnovativeCheckout({
   };
 
   const handleComplete = () => {
+    setCheckoutError("");
+    const ticket = `TK-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
     const paymentData = {
       method: selectedMethod,
+      ticketNumber: ticket,
       cashReceived: selectedMethod === "cash" ? parseFloat(cashReceived) : undefined,
       change: selectedMethod === "cash" && change > 0 ? change : undefined,
       paymentDetails:
         selectedMethod === "mixed"
-          ? splitPayments.map(p => ({ ...p, reference: "" }))
+          ? splitPayments.map((payment) => ({ ...payment, reference: "" }))
           : [{ method: selectedMethod as "cash" | "card" | "transfer" | "qr", amount: total }],
     };
 
-    const ticket = "TK" + Date.now().toString(36).toUpperCase().slice(-8);
+    const saved = onComplete(paymentData);
+    if (!saved) {
+      setCheckoutError("No se pudo guardar la venta. Revisa el stock y vuelve a intentar.");
+      return;
+    }
     setTicketNumber(ticket);
-    setPaymentDataState(paymentData);
+    setTicketSnapshot({
+      items,
+      customer,
+      subtotal,
+      discount,
+      tax,
+      total,
+      paymentMethod: selectedMethod,
+      cashReceived: selectedMethod === "cash" ? Number(cashReceived) : undefined,
+      change: selectedMethod === "cash" && change > 0 ? change : undefined,
+    });
     setShowTicket(true);
   };
 
-  const handleTicketClose = () => {
-    if (paymentDataState) {
-      onComplete(paymentDataState);
-    }
-    onClose();
-  };
+  const handleTicketClose = () => onClose();
 
   const addSplitPayment = (method: "cash" | "card" | "transfer") => {
     if (remainingForSplit <= 0) return;
@@ -131,14 +162,15 @@ export function InnovativeCheckout({
       <Modal isOpen={isOpen} onClose={handleTicketClose} title="" size="md" hideCloseButton>
         <ProfessionalTicket
           ticketNumber={ticketNumber}
-          total={total}
-          subtotal={subtotal}
-          tax={tax}
-          items={items}
-          customer={customer}
-          paymentMethod={selectedMethod}
-          cashReceived={selectedMethod === "cash" ? parseFloat(cashReceived) : undefined}
-          change={change > 0 ? change : undefined}
+          total={ticketSnapshot?.total ?? total}
+          subtotal={ticketSnapshot?.subtotal ?? subtotal}
+          discount={ticketSnapshot?.discount ?? discount}
+          tax={ticketSnapshot?.tax ?? tax}
+          items={ticketSnapshot?.items ?? items}
+          customer={ticketSnapshot?.customer ?? customer}
+          paymentMethod={ticketSnapshot?.paymentMethod ?? selectedMethod}
+          cashReceived={ticketSnapshot?.cashReceived}
+          change={ticketSnapshot?.change}
           onClose={handleTicketClose}
         />
       </Modal>
@@ -163,6 +195,11 @@ export function InnovativeCheckout({
         </div>
 
         <div className="p-6">
+          {checkoutError && (
+            <div role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+              {checkoutError}
+            </div>
+          )}
           <AnimatePresence mode="wait">
             {step === "method" && (
               <motion.div
@@ -187,8 +224,8 @@ export function InnovativeCheckout({
                 />
                 <PaymentOption
                   icon={<QrCode className="w-8 h-8" />}
-                  title="QR Code"
-                  subtitle="Escanea y paga"
+                  title="QR de referencia"
+                  subtitle="Confirmación manual"
                   color="from-purple-500 to-purple-600"
                   onClick={() => handleMethodSelect("qr")}
                 />
@@ -340,7 +377,7 @@ export function InnovativeCheckout({
 
                 <div className="bg-white p-8 rounded-2xl inline-block">
                   <QRCodeSVG
-                    value={`PAYMENT:${total}:${Date.now()}`}
+                    value={`REFERENCIA-PAGO|${total.toFixed(2)}`}
                     size={250}
                     level="H"
                     includeMargin={true}
@@ -348,8 +385,8 @@ export function InnovativeCheckout({
                 </div>
 
                 <div>
-                  <p className="text-white text-lg font-semibold">Escanea para pagar</p>
-                  <p className="text-slate-400 mt-2">Usa tu app bancaria para escanear el código</p>
+                  <p className="text-white text-lg font-semibold">Referencia de pago</p>
+                  <p className="mx-auto mt-2 max-w-sm text-sm text-amber-200">Este QR solo muestra el importe; no procesa ni confirma transferencias. Verifica el pago en la app bancaria antes de continuar.</p>
                   <p className="text-2xl font-bold text-white mt-4">{formatCurrency(total)}</p>
                 </div>
 
@@ -359,7 +396,7 @@ export function InnovativeCheckout({
                   </Button>
                   <Button onClick={handleComplete}>
                     <CheckCircle className="w-5 h-5 mr-2" />
-                    Confirmar Pago
+                    Registrar pago verificado
                   </Button>
                 </div>
               </motion.div>
