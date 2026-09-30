@@ -2,10 +2,12 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  password: string;
+  /** Passwords are never returned to the browser; user creation sends one-time input separately. */
+  password?: never;
   role: "admin" | "manager" | "cashier" | "inventory";
   avatar?: string;
   isActive: boolean;
+  lastLoginAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -80,6 +82,7 @@ export interface SaleItem {
   tax: number;
   subtotal: number;
   total: number;
+  lotAllocations?: { lotId: string; lotCode: string; quantity: number }[];
 }
 
 export interface Sale {
@@ -188,6 +191,9 @@ export interface StoreSettings {
   taxRate: number;
   currency: string;
   ticketMessage?: string;
+  minimumGrossMarginPercent?: number;
+  defaultCoverageDays?: number;
+  defaultLeadTimeDays?: number;
   theme: "light" | "dark" | "system";
 }
 

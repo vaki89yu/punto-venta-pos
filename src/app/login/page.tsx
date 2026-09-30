@@ -5,8 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
-import { STORAGE_KEYS, initializeDemoData } from "@/data/seed";
-import { User } from "@/types";
+
 import { Store, Sun, Moon, Eye, EyeOff, Lock, User as UserIcon, ArrowRight } from "lucide-react";
 
 export default function LoginPage() {
@@ -19,12 +18,12 @@ export default function LoginPage() {
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
-    initializeDemoData();
-    // Check if user is already logged in
-    const storedUser = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-    if (storedUser) {
-      router.push("/dashboard");
-    }
+    let active = true;
+    fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() as Promise<{ user: unknown | null }> : null)
+      .then((result) => { if (active && result?.user) router.replace("/dashboard"); })
+      .catch(() => undefined);
+    return () => { active = false; };
   }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -33,17 +32,20 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const users = JSON.parse(localStorage.getItem(STORAGE_KEYS.USERS) || "[]");
-      const foundUser = users.find((u: User) => u.email === email && u.password === password);
-      
-      if (foundUser && foundUser.isActive) {
-        localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(foundUser));
-        router.push("/dashboard");
-      } else {
-        setError("Credenciales inválidas");
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const result = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+      if (!response.ok) {
+        setError(result?.error?.message || "No se pudo iniciar sesión. Revisa la configuración del servidor.");
+        return;
       }
+      router.replace("/dashboard");
     } catch {
-      setError("Error al iniciar sesión");
+      setError("No se pudo conectar con el servidor.");
     } finally {
       setIsLoading(false);
     }
@@ -184,16 +186,9 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          {/* Demo credentials */}
-          <div className="mt-6 p-4 bg-blue-50/80 rounded-xl border border-blue-100">
-            <p className="text-sm font-medium text-blue-800 mb-2">
-              Credenciales de demostración:
-            </p>
-            <div className="space-y-1 text-sm text-blue-600">
-              <p>Admin: admin@pos.com / admin123</p>
-              <p>Gerente: gerente@pos.com / gerente123</p>
-              <p>Cajero: cajero@pos.com / cajero123</p>
-            </div>
+          <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            <p className="font-semibold text-slate-800">Acceso protegido por servidor</p>
+            <p className="mt-1">No hay usuarios de muestra. La cuenta inicial la crea la persona administradora durante la instalación.</p>
           </div>
         </div>
       </div>

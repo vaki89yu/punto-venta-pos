@@ -8,10 +8,19 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "db:push": "drizzle-kit push",
+    "db:initialize": "node scripts/initialize-db.mjs",
     "db:studio": "drizzle-kit studio",
     "test:scanner": "node --experimental-strip-types --test tests/*.test.mjs",
     "catalog:import": "node scripts/catalog-import.mjs",
     "postinstall": "node scripts/prepare-scanner.mjs"
+  },
+  "allowScripts": {
+    "esbuild@0.18.20": true,
+    "core-js@3.50.0": true,
+    "esbuild@0.25.12": true,
+    "sharp@0.34.5": true,
+    "esbuild@0.27.4": true,
+    "unrs-resolver@1.11.1": true
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

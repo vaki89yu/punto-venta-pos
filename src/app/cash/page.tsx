@@ -11,8 +11,6 @@ import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { formatCurrency } from "@/lib/utils";
-import { useAuth } from "@/contexts/AuthContext";
-import { STORAGE_KEYS } from "@/data/seed";
 import {
   Wallet,
   TrendingUp,
@@ -38,62 +36,70 @@ interface CashRegister {
   cashOut: number;
   openedAt: Date;
   closedAt?: Date;
+  difference?: number;
   status: "open" | "closed";
 }
 
 function CashContent() {
   const { showToast } = useToast();
-  const { user } = useAuth();
   const [cashRegister, setCashRegister] = useState<CashRegister | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [showOpenModal, setShowOpenModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [showMovementModal, setShowMovementModal] = useState(false);
   const [movementType, setMovementType] = useState<"in" | "out">("in");
   const [amount, setAmount] = useState("");
+  const [movementReason, setMovementReason] = useState("");
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEYS.CASH_REGISTER);
-    if (stored) {
-      setCashRegister(JSON.parse(stored));
-    }
-  }, []);
+    let active = true;
+    fetch("/api/cash-register", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json().catch(() => null) as { cashRegister?: (Omit<CashRegister, "openedAt" | "closedAt"> & { openedAt: string; closedAt?: string }) | null; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudo cargar la caja.");
+        if (!active) return;
+        setCashRegister(result?.cashRegister ? { ...result.cashRegister, openedAt: new Date(result.cashRegister.openedAt), closedAt: result.cashRegister.closedAt ? new Date(result.cashRegister.closedAt) : undefined } : null);
+        setLoadError("");
+      })
+      .catch((error: unknown) => { if (active) { setLoadError(error instanceof Error ? error.message : "No se pudo cargar la caja."); showToast(error instanceof Error ? error.message : "No se pudo cargar la caja.", "error"); } })
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
+  }, [showToast]);
 
-  const handleOpen = () => {
-    if (!user) return;
-    const newRegister: CashRegister = {
-      id: Math.random().toString(36).substring(2, 9),
-      userId: user.id,
-      userName: user.name,
-      openingAmount: parseFloat(amount),
-      cashSales: 0,
-      cardSales: 0,
-      transferSales: 0,
-      cashIn: 0,
-      cashOut: 0,
-      openedAt: new Date(),
-      status: "open",
-    };
-    setCashRegister(newRegister);
-    localStorage.setItem(STORAGE_KEYS.CASH_REGISTER, JSON.stringify(newRegister));
-    setShowOpenModal(false);
-    setAmount("");
-    showToast("Caja abierta exitosamente", "success");
+  const submitRegisterAction = async (payload: Record<string, unknown>) => {
+    const response = await fetch("/api/cash-register", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const result = await response.json().catch(() => null) as { cashRegister?: (Omit<CashRegister, "openedAt" | "closedAt"> & { openedAt: string; closedAt?: string }) | null; error?: { message?: string } } | null;
+    if (!response.ok || !result?.cashRegister) throw new Error(result?.error?.message || "No se pudo actualizar la caja.");
+    const updated = { ...result.cashRegister, openedAt: new Date(result.cashRegister.openedAt), closedAt: result.cashRegister.closedAt ? new Date(result.cashRegister.closedAt) : undefined };
+    setCashRegister(updated);
+    setLoadError("");
+    return updated;
   };
 
-  const handleClose = () => {
+  const handleOpen = async () => {
+    const openingAmount = Number(amount);
+    if (!Number.isFinite(openingAmount) || openingAmount < 0) return showToast("Captura un fondo inicial válido.", "warning");
+    setIsSaving(true);
+    try {
+      await submitRegisterAction({ action: "open", openingAmount });
+      setShowOpenModal(false); setAmount(""); showToast("Caja abierta y registrada en PostgreSQL", "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo abrir la caja.", "error"); }
+    finally { setIsSaving(false); }
+  };
+
+  const handleClose = async () => {
     if (!cashRegister) return;
-    const closed = {
-      ...cashRegister,
-      closingAmount: parseFloat(amount),
-      closedAt: new Date(),
-      status: "closed" as const,
-    };
-    setCashRegister(closed);
-    localStorage.setItem(STORAGE_KEYS.CASH_REGISTER, JSON.stringify(closed));
-    setShowCloseModal(false);
-    setAmount("");
-    showToast("Caja cerrada exitosamente", "success");
-    setTimeout(() => printCashCut(closed), 300);
+    const closingAmount = Number(amount);
+    if (!Number.isFinite(closingAmount) || closingAmount < 0) return showToast("Captura el efectivo contado.", "warning");
+    setIsSaving(true);
+    try {
+      const closed = await submitRegisterAction({ action: "close", registerId: cashRegister.id, closingAmount });
+      setShowCloseModal(false); setAmount(""); showToast("Caja cerrada y corte guardado en PostgreSQL", "success");
+      setTimeout(() => printCashCut(closed), 300);
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo cerrar la caja.", "error"); }
+    finally { setIsSaving(false); }
   };
 
   const printCashCut = (reg: CashRegister) => {
@@ -140,18 +146,17 @@ function CashContent() {
     win.document.close();
   };
 
-  const handleMovement = () => {
+  const handleMovement = async () => {
     if (!cashRegister) return;
-    const updated = {
-      ...cashRegister,
-      cashIn: movementType === "in" ? cashRegister.cashIn + parseFloat(amount) : cashRegister.cashIn,
-      cashOut: movementType === "out" ? cashRegister.cashOut + parseFloat(amount) : cashRegister.cashOut,
-    };
-    setCashRegister(updated);
-    localStorage.setItem(STORAGE_KEYS.CASH_REGISTER, JSON.stringify(updated));
-    setShowMovementModal(false);
-    setAmount("");
-    showToast(`Movimiento de ${movementType === "in" ? "entrada" : "salida"} registrado`, "success");
+    if (!movementReason.trim()) return showToast("Describe el motivo del movimiento de efectivo", "warning");
+    const movementAmount = Number(amount);
+    if (!Number.isFinite(movementAmount) || movementAmount <= 0) return showToast("Captura un monto válido mayor a cero.", "warning");
+    setIsSaving(true);
+    try {
+      await submitRegisterAction({ action: "movement", registerId: cashRegister.id, type: movementType, amount: movementAmount, reason: movementReason.trim() });
+      setShowMovementModal(false); setAmount(""); setMovementReason(""); showToast(`Movimiento de ${movementType === "in" ? "entrada" : "salida"} guardado en PostgreSQL`, "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo registrar el movimiento.", "error"); }
+    finally { setIsSaving(false); }
   };
 
   const expectedCash = cashRegister
@@ -161,6 +166,8 @@ function CashContent() {
   return (
     <ProtectedLayout>
       <div className="space-y-6">
+        {isLoading && <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-800">Consultando el estado de caja en el servidor…</p>}
+        {loadError && <p className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{loadError}</p>}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Control de Caja</h1>
@@ -202,6 +209,7 @@ function CashContent() {
           ) : (
             <Button
               onClick={() => setShowOpenModal(true)}
+              disabled={isLoading || isSaving || Boolean(loadError)}
               leftIcon={<Unlock className="w-5 h-5" />}
             >
               Abrir caja
@@ -323,7 +331,7 @@ function CashContent() {
               <p className="text-slate-500 dark:text-slate-400 mb-6">
                 Abre la caja para comenzar a registrar ventas
               </p>
-              <Button onClick={() => setShowOpenModal(true)} leftIcon={<Unlock className="w-5 h-5" />}>
+              <Button onClick={() => setShowOpenModal(true)} disabled={isLoading || isSaving || Boolean(loadError)} leftIcon={<Unlock className="w-5 h-5" />}>
                 Abrir caja
               </Button>
             </CardContent>
@@ -342,7 +350,7 @@ function CashContent() {
               leftIcon={<DollarSign className="w-4 h-4" />}
               required
             />
-            <Button onClick={handleOpen} fullWidth disabled={!amount}>
+            <Button onClick={handleOpen} fullWidth disabled={!amount || isSaving} isLoading={isSaving}>
               Abrir caja
             </Button>
           </div>
@@ -375,7 +383,7 @@ function CashContent() {
                 </p>
               </div>
             )}
-            <Button onClick={handleClose} fullWidth disabled={!amount}>
+            <Button onClick={handleClose} fullWidth disabled={!amount || isSaving} isLoading={isSaving}>
               Cerrar caja
             </Button>
           </div>
@@ -387,13 +395,22 @@ function CashContent() {
             <Input
               label="Monto"
               type="number"
+              min="0.01"
+              step="0.01"
               placeholder="0.00"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               leftIcon={<DollarSign className="w-4 h-4" />}
               required
             />
-            <Button onClick={handleMovement} fullWidth disabled={!amount}>
+            <Input
+              label="Motivo obligatorio"
+              value={movementReason}
+              onChange={(e) => setMovementReason(e.target.value)}
+              placeholder="Ej. Pago a proveedor, retiro para cambio..."
+              required
+            />
+            <Button onClick={handleMovement} fullWidth disabled={!amount || !movementReason.trim() || isSaving} isLoading={isSaving}>
               Registrar
             </Button>
           </div>

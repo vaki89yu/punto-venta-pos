@@ -1,115 +1,134 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatCurrency } from "@/lib/utils";
 import { CartItem, Customer, PaymentMethod } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
-import { 
-  Wallet, 
-  CreditCard, 
-  Smartphone, 
-  Banknote, 
-  QrCode,
-  Coins,
-  ArrowRight,
-  CheckCircle,
-  Calculator,
-  Split,
-  User,
-  Receipt,
-  Printer,
-  Share2,
-  Send,
-  X
-} from "lucide-react";
+import { CreditCard, Smartphone, Banknote, ArrowRight, CheckCircle, Split, X } from "lucide-react";
 import { ProfessionalTicket } from "./ProfessionalTicket";
-import { QRCodeSVG } from "qrcode.react";
+
+type CheckoutMethod = Exclude<PaymentMethod, "qr">;
 
 interface InnovativeCheckoutProps {
   isOpen: boolean;
   onClose: () => void;
   total: number;
   subtotal: number;
+  discount: number;
   tax: number;
   items: CartItem[];
   customer: Customer | null;
   onComplete: (paymentData: {
-    method: PaymentMethod;
+    method: CheckoutMethod;
+    ticketNumber: string;
     cashReceived?: number;
     change?: number;
     paymentDetails: { method: "cash" | "card" | "transfer"; amount: number; reference?: string }[];
-  }) => void;
+  }) => boolean | Promise<boolean>;
 }
 
-type PaymentStep = "method" | "details" | "qr" | "split" | "confirmation";
+type PaymentStep = "method" | "details" | "split";
+
+type TicketSnapshot = {
+  items: CartItem[];
+  customer: Customer | null;
+  subtotal: number;
+  discount: number;
+  tax: number;
+  total: number;
+  paymentMethod: CheckoutMethod;
+  cashReceived?: number;
+  change?: number;
+};
 
 export function InnovativeCheckout({
   isOpen,
   onClose,
   total,
   subtotal,
+  discount,
   tax,
   items,
   customer,
   onComplete,
 }: InnovativeCheckoutProps) {
   const [step, setStep] = useState<PaymentStep>("method");
-  const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>("cash");
+  const [selectedMethod, setSelectedMethod] = useState<CheckoutMethod>("cash");
   const [cashReceived, setCashReceived] = useState<string>("");
-  const [splitPayments, setSplitPayments] = useState<{ method: "cash" | "card" | "transfer"; amount: number }[]>([]);
+  const [externalReference, setExternalReference] = useState("");
+  const [externalPaymentConfirmed, setExternalPaymentConfirmed] = useState(false);
+  const [splitPayments, setSplitPayments] = useState<{ method: "cash" | "card" | "transfer"; amount: number; reference?: string; confirmed?: boolean }[]>([]);
   const [showTicket, setShowTicket] = useState(false);
   const [ticketNumber, setTicketNumber] = useState("");
-  const [paymentDataState, setPaymentDataState] = useState<any>(null);
+  const [ticketSnapshot, setTicketSnapshot] = useState<TicketSnapshot | null>(null);
+  const [checkoutError, setCheckoutError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const attemptTicket = useRef("");
 
   const change = parseFloat(cashReceived) - total;
-  const remainingForSplit = total - splitPayments.reduce((sum, p) => sum + p.amount, 0);
+  const remainingForSplit = Math.round((total - splitPayments.reduce((sum, p) => sum + p.amount, 0) + Number.EPSILON) * 100) / 100;
 
   useEffect(() => {
     if (isOpen) {
       setStep("method");
       setSelectedMethod("cash");
       setCashReceived("");
+      setExternalReference("");
+      setExternalPaymentConfirmed(false);
       setSplitPayments([]);
       setShowTicket(false);
+      setTicketSnapshot(null);
+      setTicketNumber("");
+      setCheckoutError("");
+      setIsSubmitting(false);
+      attemptTicket.current = "";
     }
   }, [isOpen]);
 
-  const handleMethodSelect = (method: PaymentMethod) => {
+  const handleMethodSelect = (method: CheckoutMethod) => {
     setSelectedMethod(method);
-    if (method === "qr") {
-      setStep("qr");
-    } else if (method === "mixed") {
-      setStep("split");
-    } else {
-      setStep("details");
-    }
+    setExternalReference("");
+    setExternalPaymentConfirmed(false);
+    if (method === "mixed") setStep("split");
+    else setStep("details");
   };
 
-  const handleComplete = () => {
+  const handleComplete = async () => {
+    if (isSubmitting) return;
+    setCheckoutError("");
+    setIsSubmitting(true);
+    const ticket = attemptTicket.current || `TK-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    attemptTicket.current = ticket;
     const paymentData = {
       method: selectedMethod,
-      cashReceived: selectedMethod === "cash" ? parseFloat(cashReceived) : undefined,
+      ticketNumber: ticket,
+      cashReceived: selectedMethod === "cash" ? Number(cashReceived) : selectedMethod === "mixed" ? splitPayments.filter((payment) => payment.method === "cash").reduce((sum, payment) => sum + payment.amount, 0) : undefined,
       change: selectedMethod === "cash" && change > 0 ? change : undefined,
       paymentDetails:
         selectedMethod === "mixed"
-          ? splitPayments.map(p => ({ ...p, reference: "" }))
-          : [{ method: selectedMethod as "cash" | "card" | "transfer" | "qr", amount: total }],
+          ? splitPayments.map(({ method, amount, reference }) => ({ method, amount, reference }))
+          : [{ method: selectedMethod as "cash" | "card" | "transfer", amount: total, reference: selectedMethod === "cash" ? undefined : externalReference.trim() || undefined }],
     };
 
-    const ticket = "TK" + Date.now().toString(36).toUpperCase().slice(-8);
-    setTicketNumber(ticket);
-    setPaymentDataState(paymentData);
-    setShowTicket(true);
+    try {
+      const saved = await onComplete(paymentData);
+      if (!saved) {
+        setCheckoutError("No se pudo registrar la venta. Revisa la conexión, la caja abierta y el stock antes de reintentar.");
+        return;
+      }
+      setTicketNumber(ticket);
+      setTicketSnapshot({ items, customer, subtotal, discount, tax, total, paymentMethod: selectedMethod, cashReceived: paymentData.cashReceived, change: selectedMethod === "cash" && change > 0 ? change : undefined });
+      setShowTicket(true);
+    } catch (error) {
+      setCheckoutError(error instanceof Error ? error.message : "No se pudo registrar la venta.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleTicketClose = () => {
-    if (paymentDataState) {
-      onComplete(paymentDataState);
-    }
-    onClose();
-  };
+  const handleTicketClose = () => onClose();
 
   const addSplitPayment = (method: "cash" | "card" | "transfer") => {
     if (remainingForSplit <= 0) return;
@@ -118,7 +137,7 @@ export function InnovativeCheckout({
 
   const updateSplitAmount = (index: number, amount: number) => {
     const updated = [...splitPayments];
-    updated[index].amount = amount;
+    updated[index].amount = Number.isFinite(amount) ? Math.max(0, Math.min(amount, total)) : 0;
     setSplitPayments(updated);
   };
 
@@ -131,14 +150,15 @@ export function InnovativeCheckout({
       <Modal isOpen={isOpen} onClose={handleTicketClose} title="" size="md" hideCloseButton>
         <ProfessionalTicket
           ticketNumber={ticketNumber}
-          total={total}
-          subtotal={subtotal}
-          tax={tax}
-          items={items}
-          customer={customer}
-          paymentMethod={selectedMethod}
-          cashReceived={selectedMethod === "cash" ? parseFloat(cashReceived) : undefined}
-          change={change > 0 ? change : undefined}
+          total={ticketSnapshot?.total ?? total}
+          subtotal={ticketSnapshot?.subtotal ?? subtotal}
+          discount={ticketSnapshot?.discount ?? discount}
+          tax={ticketSnapshot?.tax ?? tax}
+          items={ticketSnapshot?.items ?? items}
+          customer={ticketSnapshot?.customer ?? customer}
+          paymentMethod={ticketSnapshot?.paymentMethod ?? selectedMethod}
+          cashReceived={ticketSnapshot?.cashReceived}
+          change={ticketSnapshot?.change}
           onClose={handleTicketClose}
         />
       </Modal>
@@ -163,13 +183,18 @@ export function InnovativeCheckout({
         </div>
 
         <div className="p-6">
+          {checkoutError && (
+            <div role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+              {checkoutError}
+            </div>
+          )}
           <AnimatePresence mode="wait">
             {step === "method" && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
-                className="grid grid-cols-2 md:grid-cols-3 gap-4"
+                className="grid grid-cols-1 sm:grid-cols-2 gap-4"
               >
                 <PaymentOption
                   icon={<Banknote className="w-8 h-8" />}
@@ -180,22 +205,15 @@ export function InnovativeCheckout({
                 />
                 <PaymentOption
                   icon={<CreditCard className="w-8 h-8" />}
-                  title="Tarjeta"
-                  subtitle="Crédito o débito"
+                  title="Tarjeta externa"
+                  subtitle="Confirmar en terminal"
                   color="from-blue-500 to-blue-600"
                   onClick={() => handleMethodSelect("card")}
                 />
                 <PaymentOption
-                  icon={<QrCode className="w-8 h-8" />}
-                  title="QR Code"
-                  subtitle="Escanea y paga"
-                  color="from-purple-500 to-purple-600"
-                  onClick={() => handleMethodSelect("qr")}
-                />
-                <PaymentOption
                   icon={<Smartphone className="w-8 h-8" />}
                   title="Transferencia"
-                  subtitle="SPEI o transfer"
+                  subtitle="Confirmar en app bancaria"
                   color="from-cyan-500 to-cyan-600"
                   onClick={() => handleMethodSelect("transfer")}
                 />
@@ -205,13 +223,6 @@ export function InnovativeCheckout({
                   subtitle="Varios métodos"
                   color="from-amber-500 to-amber-600"
                   onClick={() => handleMethodSelect("mixed")}
-                />
-                <PaymentOption
-                  icon={<User className="w-8 h-8" />}
-                  title="Fiado"
-                  subtitle="Venta a crédito"
-                  color="from-rose-500 to-rose-600"
-                  onClick={() => handleMethodSelect("cash")}
                 />
               </motion.div>
             )}
@@ -286,7 +297,8 @@ export function InnovativeCheckout({
 
                     <Button
                       onClick={handleComplete}
-                      disabled={parseFloat(cashReceived) < total}
+                      disabled={!Number.isFinite(Number(cashReceived)) || Number(cashReceived) < total || isSubmitting}
+                      isLoading={isSubmitting}
                       fullWidth
                       size="lg"
                       className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700"
@@ -299,69 +311,22 @@ export function InnovativeCheckout({
 
                 {(selectedMethod === "card" || selectedMethod === "transfer") && (
                   <div className="space-y-4">
-                    <div className="bg-slate-800 rounded-2xl p-8 text-center">
-                      {selectedMethod === "card" ? (
-                        <>
-                          <CreditCard className="w-16 h-16 text-blue-400 mx-auto mb-4" />
-                          <p className="text-white text-lg font-semibold">Procesando pago con tarjeta</p>
-                          <p className="text-slate-400 mt-2">Conecta la terminal y procesa el pago</p>
-                        </>
-                      ) : (
-                        <>
-                          <Smartphone className="w-16 h-16 text-cyan-400 mx-auto mb-4" />
-                          <p className="text-white text-lg font-semibold">Transferencia bancaria</p>
-                          <p className="text-slate-400 mt-2">Esperando confirmación de transferencia</p>
-                        </>
-                      )}
+                    <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-5">
+                      <div className="flex items-center gap-3">
+                        {selectedMethod === "card" ? <CreditCard className="h-8 w-8 text-blue-300" /> : <Smartphone className="h-8 w-8 text-cyan-300" />}
+                        <div><p className="font-semibold text-white">{selectedMethod === "card" ? "Cobro en terminal externa" : "Transferencia bancaria"}</p><p className="text-sm text-amber-100">El POS no procesa ni valida este pago. Confirma el abono en la terminal o app bancaria antes de registrarlo.</p></div>
+                      </div>
                     </div>
-                    <Button onClick={handleComplete} fullWidth size="lg">
+                    <label className="block text-sm font-medium text-slate-200">Referencia o autorización (opcional)
+                      <input value={externalReference} onChange={(event) => setExternalReference(event.target.value)} maxLength={255} placeholder="Folio de terminal o transferencia" className="mt-1 w-full rounded-xl border border-slate-600 bg-slate-700 px-4 py-3 text-white placeholder:text-slate-400" />
+                    </label>
+                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-800 p-4 text-sm text-white"><input type="checkbox" checked={externalPaymentConfirmed} onChange={(event) => setExternalPaymentConfirmed(event.target.checked)} className="mt-1 h-4 w-4 accent-emerald-500" /><span>Confirmo que el pago fue aprobado y recibido fuera del POS.</span></label>
+                    <Button onClick={handleComplete} disabled={!externalPaymentConfirmed || isSubmitting} isLoading={isSubmitting} fullWidth size="lg">
                       <CheckCircle className="w-5 h-5 mr-2" />
-                      Confirmar Pago
+                      Registrar pago ya verificado
                     </Button>
                   </div>
                 )}
-              </motion.div>
-            )}
-
-            {step === "qr" && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                className="text-center space-y-6"
-              >
-                <button
-                  onClick={() => setStep("method")}
-                  className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors"
-                >
-                  <ArrowRight className="w-4 h-4 rotate-180" />
-                  Volver
-                </button>
-
-                <div className="bg-white p-8 rounded-2xl inline-block">
-                  <QRCodeSVG
-                    value={`PAYMENT:${total}:${Date.now()}`}
-                    size={250}
-                    level="H"
-                    includeMargin={true}
-                  />
-                </div>
-
-                <div>
-                  <p className="text-white text-lg font-semibold">Escanea para pagar</p>
-                  <p className="text-slate-400 mt-2">Usa tu app bancaria para escanear el código</p>
-                  <p className="text-2xl font-bold text-white mt-4">{formatCurrency(total)}</p>
-                </div>
-
-                <div className="flex gap-3">
-                  <Button onClick={() => setStep("method")} variant="secondary">
-                    Cancelar
-                  </Button>
-                  <Button onClick={handleComplete}>
-                    <CheckCircle className="w-5 h-5 mr-2" />
-                    Confirmar Pago
-                  </Button>
-                </div>
               </motion.div>
             )}
 
@@ -399,38 +364,33 @@ export function InnovativeCheckout({
                   </div>
                 </div>
 
+                <p className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">Tarjeta y transferencia no se procesan en este POS; confirma cada cargo externo en la terminal o app bancaria.</p>
+
                 {splitPayments.map((payment, index) => (
                   <motion.div
                     key={index}
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="bg-slate-800 rounded-xl p-4 flex items-center justify-between"
+                    className="space-y-3 rounded-xl bg-slate-800 p-4"
                   >
-                    <div className="flex items-center gap-3">
-                      {payment.method === "cash" && <Banknote className="w-5 h-5 text-emerald-400" />}
-                      {payment.method === "card" && <CreditCard className="w-5 h-5 text-blue-400" />}
-                      {payment.method === "transfer" && <Smartphone className="w-5 h-5 text-cyan-400" />}
-                      <span className="text-white capitalize">{payment.method}</span>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        {payment.method === "cash" && <Banknote className="w-5 h-5 text-emerald-400" />}
+                        {payment.method === "card" && <CreditCard className="w-5 h-5 text-blue-400" />}
+                        {payment.method === "transfer" && <Smartphone className="w-5 h-5 text-cyan-400" />}
+                        <span className="text-white capitalize">{payment.method}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input type="number" min="0" step="0.01" value={payment.amount} onChange={(e) => updateSplitAmount(index, Number(e.target.value))} aria-label={`Importe ${payment.method}`} className="w-28 rounded-lg bg-slate-700 px-3 py-2 text-right text-white" />
+                        <button onClick={() => removeSplitPayment(index)} aria-label="Quitar forma de pago" className="rounded-lg p-2 text-red-400 hover:bg-red-500/20"><X className="w-4 h-4" /></button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="number"
-                        value={payment.amount}
-                        onChange={(e) => updateSplitAmount(index, parseFloat(e.target.value))}
-                        className="w-24 bg-slate-700 text-white text-right px-3 py-2 rounded-lg"
-                      />
-                      <button
-                        onClick={() => removeSplitPayment(index)}
-                        className="p-2 text-red-400 hover:bg-red-500/20 rounded-lg"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
+                    {payment.method !== "cash" && <div className="space-y-2 border-t border-slate-700 pt-3"><input value={payment.reference || ""} onChange={(event) => setSplitPayments((current) => current.map((entry, i) => i === index ? { ...entry, reference: event.target.value } : entry))} maxLength={255} placeholder="Referencia / autorización (opcional)" className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-white placeholder:text-slate-400" /><label className="flex cursor-pointer items-start gap-2 text-xs text-amber-100"><input type="checkbox" checked={Boolean(payment.confirmed)} onChange={(event) => setSplitPayments((current) => current.map((entry, i) => i === index ? { ...entry, confirmed: event.target.checked } : entry))} className="mt-0.5 accent-emerald-500" /><span>Confirmo que este pago fue aprobado fuera del POS.</span></label></div>}
                   </motion.div>
                 ))}
 
                 {remainingForSplit > 0 && (
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <button
                       onClick={() => addSplitPayment("cash")}
                       className="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 py-3 rounded-xl font-semibold transition-colors flex items-center justify-center gap-2"
@@ -455,14 +415,9 @@ export function InnovativeCheckout({
                   </div>
                 )}
 
-                <Button
-                  onClick={handleComplete}
-                  disabled={remainingForSplit !== 0}
-                  fullWidth
-                  size="lg"
-                >
+                <Button onClick={handleComplete} disabled={Math.abs(remainingForSplit) > 0.009 || splitPayments.length === 0 || splitPayments.some((payment) => payment.method !== "cash" && !payment.confirmed) || isSubmitting} isLoading={isSubmitting} fullWidth size="lg">
                   <CheckCircle className="w-5 h-5 mr-2" />
-                  Completar Venta
+                  Registrar venta (pagos confirmados)
                 </Button>
               </motion.div>
             )}

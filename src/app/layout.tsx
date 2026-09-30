@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "@fontsource-variable/inter";
 import "./globals.css";
+import { PwaRegistration } from "@/components/layout/PwaRegistration";
 
 export const metadata: Metadata = {
   title: "Mi Tienda POS - Sistema de Punto de Venta",
@@ -26,7 +27,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="es" suppressHydrationWarning>
-      <body className="font-sans">{children}</body>
+      <body className="font-sans">
+        <PwaRegistration />
+        {children}
+      </body>
     </html>
   );
 }

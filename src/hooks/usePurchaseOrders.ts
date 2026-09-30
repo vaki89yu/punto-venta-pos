@@ -1,16 +1,15 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { generateId } from "@/lib/utils";
+import { useCallback, useEffect, useState } from "react";
 
 export interface PurchaseOrderItem {
   productId: string;
   productName: string;
   quantity: number;
+  receivedQuantity?: number;
   unitCost: number;
   total: number;
 }
-
 export interface PurchaseOrder {
   id: string;
   orderNumber: string;
@@ -19,58 +18,59 @@ export interface PurchaseOrder {
   items: PurchaseOrderItem[];
   total: number;
   status: "pending" | "ordered" | "received" | "cancelled";
-  expectedDate?: Date;
+  expectedDate?: Date | string;
   notes?: string;
-  createdAt: Date;
-  receivedAt?: Date;
+  createdAt: Date | string;
+  receivedAt?: Date | string;
 }
+export type PurchaseReceipt = { productId: string; lotCode: string; expiresOn?: string | null }[];
 
-const PO_KEY = "pos_purchase_orders";
+async function responseError(response: Response) {
+  const payload = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+  return new Error(payload?.error?.message || `Error del servidor (${response.status}).`);
+}
 
 export function usePurchaseOrders() {
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
+  const refreshOrders = useCallback(async () => {
+    const response = await fetch("/api/purchase-orders", { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) throw await responseError(response);
+    const payload = await response.json() as { orders: PurchaseOrder[] };
+    setOrders(payload.orders || []);
+    setError(null);
+    return payload.orders || [];
+  }, []);
   useEffect(() => {
-    const stored = localStorage.getItem(PO_KEY);
-    if (stored) setOrders(JSON.parse(stored));
+    let active = true;
+    refreshOrders().catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : "No se pudieron cargar las órdenes."); }).finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
+  }, [refreshOrders]);
+
+  const createOrder = useCallback(async (data: Omit<PurchaseOrder, "id" | "orderNumber" | "createdAt" | "status">) => {
+    const response = await fetch("/api/purchase-orders", {
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ supplierId: data.supplierId, items: data.items.map(({ productId, quantity, unitCost }) => ({ productId, quantity, unitCost })), expectedDate: data.expectedDate ? new Date(data.expectedDate).toISOString() : undefined, notes: data.notes }),
+    });
+    if (!response.ok) throw await responseError(response);
+    const result = await response.json() as { order: PurchaseOrder };
+    setOrders((current) => [result.order, ...current]);
+    return result.order;
   }, []);
 
-  const saveOrders = useCallback((data: PurchaseOrder[]) => {
-    setOrders(data);
-    localStorage.setItem(PO_KEY, JSON.stringify(data));
+  const updateOrderStatus = useCallback(async (id: string, status: PurchaseOrder["status"], receipts?: PurchaseReceipt) => {
+    const response = await fetch(`/api/purchase-orders/${encodeURIComponent(id)}`, {
+      method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, receipts }),
+    });
+    if (!response.ok) throw await responseError(response);
+    const result = await response.json() as { order: { id: string; status: PurchaseOrder["status"]; receivedAt?: Date | string } };
+    setOrders((current) => current.map((order) => order.id === id ? { ...order, status: result.order.status, receivedAt: result.order.receivedAt } : order));
   }, []);
 
-  const generateOrderNumber = () => {
-    return "OC-" + Date.now().toString(36).toUpperCase().slice(-8);
-  };
-
-  const createOrder = useCallback((data: Omit<PurchaseOrder, "id" | "orderNumber" | "createdAt" | "status">) => {
-    const newOrder: PurchaseOrder = {
-      ...data,
-      id: generateId(),
-      orderNumber: generateOrderNumber(),
-      status: "pending",
-      createdAt: new Date(),
-    };
-    const updated = [newOrder, ...orders];
-    saveOrders(updated);
-    return newOrder;
-  }, [orders, saveOrders]);
-
-  const updateOrderStatus = useCallback((id: string, status: PurchaseOrder["status"]) => {
-    const updated = orders.map(o =>
-      o.id === id ? { ...o, status, receivedAt: status === "received" ? new Date() : o.receivedAt } : o
-    );
-    saveOrders(updated);
-  }, [orders, saveOrders]);
-
-  const getPendingOrders = useCallback(() => {
-    return orders.filter(o => o.status === "pending" || o.status === "ordered");
-  }, [orders]);
-
-  const getTotalPending = useCallback(() => {
-    return getPendingOrders().reduce((sum, o) => sum + o.total, 0);
-  }, [getPendingOrders]);
-
-  return { orders, createOrder, updateOrderStatus, getPendingOrders, getTotalPending };
+  const getPendingOrders = useCallback(() => orders.filter((order) => order.status === "pending" || order.status === "ordered"), [orders]);
+  const getTotalPending = useCallback(() => getPendingOrders().reduce((sum, order) => sum + order.total, 0), [getPendingOrders]);
+  return { orders, isLoading, error, refreshOrders, createOrder, updateOrderStatus, getPendingOrders, getTotalPending };
 }

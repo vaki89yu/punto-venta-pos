@@ -77,16 +77,17 @@ export function OpenFoodFactsCatalogPanel() {
     load(next, query);
   };
 
-  const handleAdd = (barcode: string, name: string) => {
-    const entry = data?.items.find((p) => p.barcode === barcode);
+  const handleAdd = async (barcode: string, name: string) => {
+    const entry = data?.items.find((product) => product.barcode === barcode);
     if (!entry) return;
-    if (products.some((p) => p.barcode === entry.barcode)) {
+    if (products.some((product) => product.barcode === entry.barcode)) {
       showToast("Este código de barras ya está en el inventario", "warning");
       return;
     }
-    // Precios y stock nacen en 0: la tienda los captura después.
-    addProduct(entryToProductDraft(entry));
-    showToast(`${name}: agregado como inactivo, pendiente de precio`, "success");
+    try {
+      await addProduct(entryToProductDraft(entry));
+      showToast(`${name}: guardado en el catálogo propio, inactivo y pendiente de precio`, "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo importar el producto.", "error"); }
   };
 
   const meta = data?.meta;

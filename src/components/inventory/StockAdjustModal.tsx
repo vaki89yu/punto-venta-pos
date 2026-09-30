@@ -5,13 +5,14 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Product } from "@/types";
+import { isFractionalUnit } from "@/lib/professionalFeatures";
 import { Plus, Minus, RefreshCw, Package } from "lucide-react";
 
 interface StockAdjustModalProps {
   product: Product | null;
   isOpen: boolean;
   onClose: () => void;
-  onAdjust: (productId: string, newStock: number, reason: string) => void;
+  onAdjust: (productId: string, newStock: number, reason: string) => void | Promise<void>;
 }
 
 type Mode = "add" | "remove" | "set";
@@ -20,21 +21,31 @@ export function StockAdjustModal({ product, isOpen, onClose, onAdjust }: StockAd
   const [mode, setMode] = useState<Mode>("add");
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState("");
 
   if (!product) return null;
 
-  const qty = parseInt(amount) || 0;
+  const qty = Number(amount) || 0;
   const newStock =
     mode === "add" ? product.stock + qty :
     mode === "remove" ? Math.max(0, product.stock - qty) :
     qty;
 
-  const handleSubmit = () => {
-    if (!amount) return;
-    onAdjust(product.id, newStock, reason || `Ajuste manual (${mode})`);
-    setAmount("");
-    setReason("");
-    onClose();
+  const handleSubmit = async () => {
+    setError("");
+    if (!Number.isFinite(qty) || qty <= 0) return setError("Ingresa una cantidad mayor a cero.");
+    if (mode === "remove" && qty > product.stock) return setError("La cantidad supera la existencia actual.");
+    if (reason.trim().length < 3) return setError("Escribe el motivo del movimiento (mínimo 3 caracteres).");
+    setIsSaving(true);
+    try {
+      await onAdjust(product.id, newStock, reason.trim());
+      setAmount("");
+      setReason("");
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo guardar el ajuste.");
+    } finally { setIsSaving(false); }
   };
 
   const modes: { id: Mode; label: string; icon: any; color: string }[] = [
@@ -83,6 +94,8 @@ export function StockAdjustModal({ product, isOpen, onClose, onAdjust }: StockAd
         <Input
           label="Cantidad"
           type="number"
+          min="0.001"
+          step={isFractionalUnit(product.unit) ? "0.001" : "1"}
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="0"
@@ -90,11 +103,13 @@ export function StockAdjustModal({ product, isOpen, onClose, onAdjust }: StockAd
         />
 
         <Input
-          label="Motivo (opcional)"
+          label="Motivo obligatorio"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="Ej: Merma, recepción de mercancía, conteo físico..."
+          required
         />
+        {error && <p role="alert" className="text-sm font-medium text-red-600">{error}</p>}
 
         {amount && (
           <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl flex items-center justify-between">
@@ -105,7 +120,7 @@ export function StockAdjustModal({ product, isOpen, onClose, onAdjust }: StockAd
 
         <div className="flex gap-3">
           <Button variant="secondary" fullWidth onClick={onClose}>Cancelar</Button>
-          <Button fullWidth onClick={handleSubmit} disabled={!amount}>Aplicar ajuste</Button>
+          <Button fullWidth onClick={handleSubmit} disabled={!amount || isSaving} isLoading={isSaving}>Aplicar ajuste</Button>
         </div>
       </div>
     </Modal>

@@ -1,9 +1,13 @@
 "use client";
 
 import React, { useState } from "react";
-import { CartItem, Customer } from "@/types";
+import { Customer } from "@/types";
 import { formatCurrency } from "@/lib/utils";
 import { useCart } from "@/contexts/CartContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/components/ui/Toast";
+import { formatQuantity, getMaxDiscountPercent, isFractionalUnit, recordAuditEvent } from "@/lib/professionalFeatures";
+import { STORAGE_KEYS } from "@/data/seed";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
@@ -23,14 +27,30 @@ import {
 
 interface CartProps {
   customers: Customer[];
+  selectedCustomer: Customer | null;
+  onCustomerChange: (customer: Customer | null) => void;
   onCheckout: () => void;
 }
 
-export function Cart({ customers, onCheckout }: CartProps) {
-  const { items, removeItem, updateQuantity, updateDiscount, subtotal, discount, tax, total, itemCount, clearCart } = useCart();
+export function Cart({ customers, selectedCustomer, onCustomerChange, onCheckout }: CartProps) {
+  const { items, removeItem, updateQuantity, updateDiscount, subtotal, discount, tax, total, clearCart } = useCart();
+  const { user } = useAuth();
+  const { showToast } = useToast();
   const [showCustomerModal, setShowCustomerModal] = useState(false);
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
+  const [quantityDrafts, setQuantityDrafts] = useState<Record<string, string>>({});
+  const [minimumMargin, setMinimumMargin] = useState(10);
+  const canManageDiscounts = user?.role === "admin" || user?.role === "manager";
+
+  React.useEffect(() => {
+    try {
+      const settings = JSON.parse(localStorage.getItem(STORAGE_KEYS.SETTINGS) || "{}");
+      const value = Number(settings.minimumGrossMarginPercent);
+      if (Number.isFinite(value)) setMinimumMargin(Math.max(0, Math.min(90, value)));
+    } catch {
+      // Keep the conservative default margin floor.
+    }
+  }, []);
 
   const filteredCustomers = customers.filter(
     (c) =>
@@ -40,11 +60,36 @@ export function Cart({ customers, onCheckout }: CartProps) {
 
   const handleQuantityChange = (productId: string, delta: number) => {
     const item = items.find((i) => i.product.id === productId);
-    if (item) {
-      const newQuantity = item.quantity + delta;
-      if (newQuantity > 0) {
-        updateQuantity(productId, newQuantity);
-      }
+    if (!item) return;
+    const step = isFractionalUnit(item.product.unit) ? 0.05 : 1;
+    if (delta < 0 && item.quantity <= step + 0.0001) {
+      removeItem(productId);
+      return;
+    }
+    const newQuantity = Math.max(step, item.quantity + delta * step);
+    if (!updateQuantity(productId, newQuantity)) {
+      showToast(`No hay suficiente stock disponible de ${item.product.name}`, "warning");
+    }
+  };
+
+  const handleDiscountChange = (productId: string, requestedValue: number) => {
+    const item = items.find((current) => current.product.id === productId);
+    if (!item || !canManageDiscounts) return;
+    const requested = Math.max(0, Math.min(100, Number.isFinite(requestedValue) ? requestedValue : 0));
+    const cap = getMaxDiscountPercent(item.product.purchasePrice, item.product.salePrice, minimumMargin);
+    const accepted = Math.min(requested, cap);
+    updateDiscount(productId, accepted);
+    if (accepted > 0) {
+      recordAuditEvent({
+        action: "sale.discount.applied",
+        entityType: "cart_item",
+        entityId: productId,
+        summary: `Descuento de ${accepted.toFixed(1)}% aplicado a ${item.product.name}.`,
+        metadata: { productId, discountPercent: accepted, minimumMarginPercent: minimumMargin },
+      });
+    }
+    if (requested > cap + 0.01) {
+      showToast(`Descuento limitado a ${cap.toFixed(1)}% para proteger el margen mínimo de ${minimumMargin}%`, "warning");
     }
   };
 
@@ -59,7 +104,7 @@ export function Cart({ customers, onCheckout }: CartProps) {
             </div>
             <div>
               <h2 className="font-semibold text-slate-700">Carrito</h2>
-              <p className="text-sm text-slate-400">{itemCount} productos</p>
+              <p className="text-sm text-slate-400">{items.length} {items.length === 1 ? "partida" : "partidas"}</p>
             </div>
           </div>
           {items.length > 0 && (
@@ -121,7 +166,7 @@ export function Cart({ customers, onCheckout }: CartProps) {
                       {item.product.name}
                     </h3>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {formatCurrency(item.product.salePrice)} c/u
+                      {formatCurrency(item.product.salePrice)} / {item.product.unit}
                     </p>
                   </div>
                   <button
@@ -140,9 +185,40 @@ export function Cart({ customers, onCheckout }: CartProps) {
                     >
                       <Minus className="w-4 h-4" />
                     </button>
-                    <span className="w-10 text-center font-medium text-slate-900 dark:text-white">
-                      {item.quantity}
-                    </span>
+                    <input
+                      aria-label={`Cantidad de ${item.product.name}`}
+                      type="number"
+                      min={isFractionalUnit(item.product.unit) ? "0.001" : "1"}
+                      step={isFractionalUnit(item.product.unit) ? "0.001" : "1"}
+                      value={quantityDrafts[item.product.id] ?? String(item.quantity)}
+                      onChange={(event) => setQuantityDrafts((current) => ({ ...current, [item.product.id]: event.target.value }))}
+                      onBlur={() => {
+                        const draft = quantityDrafts[item.product.id];
+                        if (draft === undefined) return;
+                        const next = Number(draft);
+                        if (Number.isFinite(next) && next > 0) {
+                          if (!updateQuantity(item.product.id, next)) {
+                            showToast(`Cantidad mayor al stock disponible (${formatQuantity(item.product.stock, item.product.unit)})`, "warning");
+                          }
+                        }
+                        setQuantityDrafts((current) => {
+                          const nextDrafts = { ...current };
+                          delete nextDrafts[item.product.id];
+                          return nextDrafts;
+                        });
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                        if (event.key === "Escape") {
+                          setQuantityDrafts((current) => {
+                            const nextDrafts = { ...current };
+                            delete nextDrafts[item.product.id];
+                            return nextDrafts;
+                          });
+                        }
+                      }}
+                      className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-sm font-semibold text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
+                    />
                     <button
                       onClick={() => handleQuantityChange(item.product.id, 1)}
                       className="w-8 h-8 flex items-center justify-center rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors"
@@ -155,9 +231,31 @@ export function Cart({ customers, onCheckout }: CartProps) {
                   </span>
                 </div>
 
+                {canManageDiscounts && (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-800">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Descuento autorizado</p>
+                      <p className="text-[11px] text-slate-500">Máximo {getMaxDiscountPercent(item.product.purchasePrice, item.product.salePrice, minimumMargin).toFixed(1)}% para conservar {minimumMargin}% de margen</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <input
+                        aria-label={`Descuento de ${item.product.name}`}
+                        type="number"
+                        min="0"
+                        max={getMaxDiscountPercent(item.product.purchasePrice, item.product.salePrice, minimumMargin)}
+                        step="0.5"
+                        value={item.discount || ""}
+                        placeholder="0"
+                        onChange={(event) => handleDiscountChange(item.product.id, Number(event.target.value))}
+                        className="w-16 rounded-md border border-slate-200 px-2 py-1 text-right text-sm font-semibold outline-none focus:border-blue-500 dark:border-slate-600 dark:bg-slate-900"
+                      />
+                      <span className="text-xs text-slate-500">%</span>
+                    </div>
+                  </div>
+                )}
                 {item.discount > 0 && (
                   <Badge variant="success" size="sm" className="mt-2">
-                    -{item.discount}% descuento
+                    -{item.discount.toFixed(1)}% descuento
                   </Badge>
                 )}
               </div>
@@ -180,7 +278,7 @@ export function Cart({ customers, onCheckout }: CartProps) {
             </div>
           )}
           <div className="flex justify-between text-sm text-slate-600 dark:text-slate-400">
-            <span>IVA (16%)</span>
+            <span>Impuestos</span>
             <span>{formatCurrency(tax)}</span>
           </div>
           <div className="flex justify-between text-lg font-bold text-slate-900 dark:text-white pt-2 border-t border-slate-200 dark:border-slate-700">
@@ -215,7 +313,7 @@ export function Cart({ customers, onCheckout }: CartProps) {
           <div className="max-h-[300px] overflow-y-auto space-y-2">
             <button
               onClick={() => {
-                setSelectedCustomer(null);
+                onCustomerChange(null);
                 setShowCustomerModal(false);
               }}
               className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-colors ${
@@ -237,7 +335,7 @@ export function Cart({ customers, onCheckout }: CartProps) {
               <button
                 key={customer.id}
                 onClick={() => {
-                  setSelectedCustomer(customer);
+                  onCustomerChange(customer);
                   setShowCustomerModal(false);
                 }}
                 className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-colors ${

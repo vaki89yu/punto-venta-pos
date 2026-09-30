@@ -3,6 +3,7 @@
 import React, { useState, useMemo } from "react";
 import { Product, Category } from "@/types";
 import { formatCurrency } from "@/lib/utils";
+import { getSellableStock, isFractionalUnit } from "@/lib/professionalFeatures";
 import { Search, Package, Grid3X3, List } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
@@ -28,7 +29,7 @@ export function ProductGrid({ products, categories, onAddToCart }: ProductGridPr
         product.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
         product.barcode.includes(searchQuery);
       const matchesCategory = selectedCategory ? product.categoryId === selectedCategory : true;
-      return matchesSearch && matchesCategory && product.isActive && product.stock > 0;
+      return matchesSearch && matchesCategory && product.isActive && getSellableStock(product.stock, product.id) > 0;
     });
   }, [products, searchQuery, selectedCategory]);
 
@@ -134,9 +135,10 @@ export function ProductGrid({ products, categories, onAddToCart }: ProductGridPr
                   {product.name}
                 </h3>
                 <p className="text-lg font-bold text-blue-500">
-                  {formatCurrency(product.salePrice)}
+                  {formatCurrency(product.salePrice)} <span className="text-xs font-semibold text-slate-500">/ {product.unit}</span>
                 </p>
                 <p className="text-xs text-slate-400">SKU: {product.sku}</p>
+                {isFractionalUnit(product.unit) && <p className="mt-1 text-[11px] font-semibold text-cyan-700">Captura de peso habilitada</p>}
                 {product.stock <= product.minStock && (
                   <Badge variant="warning" size="sm" className="absolute top-2 right-2">
                     Bajo stock
@@ -170,12 +172,12 @@ export function ProductGrid({ products, categories, onAddToCart }: ProductGridPr
                 <div className="flex-1 text-left">
                   <h3 className="font-medium text-slate-900">{product.name}</h3>
                   <p className="text-sm text-slate-500">
-                    SKU: {product.sku} | Stock: {product.stock}
+                    SKU: {product.sku} | Stock: {product.stock} {product.unit}
                   </p>
                 </div>
                 <div className="text-right">
                   <p className="text-lg font-bold text-blue-600">
-                    {formatCurrency(product.salePrice)}
+                    {formatCurrency(product.salePrice)} <span className="text-xs font-semibold">/ {product.unit}</span>
                   </p>
                   {product.stock <= product.minStock && (
                     <Badge variant="warning" size="sm">Bajo stock</Badge>

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0f172a">
+    <title>Sin conexión · Mi Tienda POS</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; color: #e2e8f0; background: #0f172a; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      main { width: min(100%, 480px); padding: 32px; border: 1px solid #334155; border-radius: 24px; background: #1e293b; box-shadow: 0 24px 80px #02061780; }
+      .icon { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 18px; color: #fecaca; background: #7f1d1d80; font-size: 28px; }
+      h1 { margin: 22px 0 8px; font-size: 25px; }
+      p { line-height: 1.6; color: #cbd5e1; }
+      a { display: inline-flex; margin-top: 12px; padding: 12px 16px; border-radius: 12px; color: white; text-decoration: none; font-weight: 700; background: #2563eb; }
+      small { display: block; margin-top: 18px; color: #94a3b8; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="icon" aria-hidden="true">⌁</div>
+      <h1>Estás sin conexión</h1>
+      <p>El POS guarda la información de demostración en este dispositivo. Cuando vuelva la conexión, intenta abrir de nuevo la pantalla que necesitas.</p>
+      <a href="/pos">Volver al punto de venta</a>
+      <small>Importante: estos datos locales no se sincronizan entre equipos ni sustituyen una copia de seguridad en servidor.</small>
+    </main>
+  </body>
+</html>

@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useRef } from "react";
+import React, { useMemo, useRef, useSyncExternalStore } from "react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
-import { CartItem, Customer, PaymentMethod } from "@/types";
-import { Printer, Download, Share2, X, CheckCircle, Receipt, Store, MapPin, Phone, Mail } from "lucide-react";
+import { CartItem, Customer, PaymentMethod, StoreSettings } from "@/types";
+import { STORAGE_KEYS } from "@/data/seed";
+import { buildWhatsAppUrl, formatQuantity } from "@/lib/professionalFeatures";
+import { Printer, Download, Share2, X, CheckCircle, Receipt, Store, Phone, Mail, MessageCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -13,6 +15,7 @@ interface ProfessionalTicketProps {
   ticketNumber: string;
   total: number;
   subtotal: number;
+  discount: number;
   tax: number;
   items: CartItem[];
   customer: Customer | null;
@@ -22,10 +25,44 @@ interface ProfessionalTicketProps {
   onClose: () => void;
 }
 
+const DEFAULT_TICKET_SETTINGS: Partial<StoreSettings> = {
+  name: "Abarrotes La Esquina",
+  address: "",
+  phone: "",
+  email: "",
+  rfc: "",
+  ticketMessage: "¡Gracias por su compra! Vuelva pronto.",
+};
+
+function subscribeTicketSettings(callback: () => void) {
+  const onStorage = (event: StorageEvent) => {
+    if (!event.key || event.key === STORAGE_KEYS.SETTINGS) callback();
+  };
+  const onLocalChange = (event: Event) => {
+    const key = (event as CustomEvent<{ key?: string }>).detail?.key;
+    if (!key || key === STORAGE_KEYS.SETTINGS) callback();
+  };
+  window.addEventListener("storage", onStorage);
+  window.addEventListener("pos:local-change", onLocalChange);
+  return () => {
+    window.removeEventListener("storage", onStorage);
+    window.removeEventListener("pos:local-change", onLocalChange);
+  };
+}
+
+function getTicketSettingsSnapshot() {
+  return localStorage.getItem(STORAGE_KEYS.SETTINGS) || "";
+}
+
+function getServerTicketSettingsSnapshot() {
+  return "";
+}
+
 export function ProfessionalTicket({
   ticketNumber,
   total,
   subtotal,
+  discount,
   tax,
   items,
   customer,
@@ -35,6 +72,14 @@ export function ProfessionalTicket({
   onClose,
 }: ProfessionalTicketProps) {
   const ticketRef = useRef<HTMLDivElement>(null);
+  const settingsSnapshot = useSyncExternalStore(subscribeTicketSettings, getTicketSettingsSnapshot, getServerTicketSettingsSnapshot);
+  const storeSettings = useMemo(() => {
+    try {
+      return { ...DEFAULT_TICKET_SETTINGS, ...JSON.parse(settingsSnapshot) } as Partial<StoreSettings>;
+    } catch {
+      return DEFAULT_TICKET_SETTINGS;
+    }
+  }, [settingsSnapshot]);
 
   const handleDownloadPDF = async () => {
     if (!ticketRef.current) return;
@@ -88,12 +133,30 @@ export function ProfessionalTicket({
       try {
         await navigator.share({
           title: `Ticket ${ticketNumber}`,
-          text: `Compra en Abarrotes La Esquina por ${formatCurrency(total)}`,
+          text: `Compra en ${storeSettings.name || "Mi Tienda"} por ${formatCurrency(total)}. Ticket ${ticketNumber}.`,
         });
       } catch {
-        // User cancelled
+        // The customer cancelled the native share sheet.
       }
     }
+  };
+
+  const handleWhatsAppShare = () => {
+    const lines = items.map((item) => {
+      const gross = item.product.salePrice * item.quantity;
+      const net = gross * (1 - item.discount / 100);
+      const lineTotal = net + net * (Math.max(0, item.product.tax || 0) / 100);
+      return `• ${formatQuantity(item.quantity, item.product.unit)} ${item.product.name}: ${formatCurrency(lineTotal)}`;
+    });
+    const message = [
+      `Hola${customer?.name ? ` ${customer.name}` : ""}, este es el resumen de tu compra en ${storeSettings.name || "Mi Tienda"}.`,
+      `Ticket: ${ticketNumber}`,
+      ...lines,
+      `Total: ${formatCurrency(total)}`,
+      storeSettings.phone ? `Tienda: ${storeSettings.phone}` : "",
+      storeSettings.ticketMessage || "¡Gracias por tu compra!",
+    ].filter(Boolean).join("\n");
+    window.open(buildWhatsAppUrl(customer?.phone, message), "_blank", "noopener,noreferrer");
   };
 
   const getPaymentMethodText = (method: PaymentMethod) => {
@@ -121,15 +184,13 @@ export function ProfessionalTicket({
             <Store className="w-6 h-6 text-white" />
           </div>
           <h1 className="text-xl font-black text-slate-800 tracking-tight">
-            ABARROTES
+            {storeSettings.name || "Mi Tienda"}
           </h1>
-          <h2 className="text-lg font-bold text-emerald-600">
-            LA ESQUINA
-          </h2>
           <div className="mt-2 text-xs text-slate-600 space-y-0.5">
-            <p>Calle Principal #123, Col. Centro</p>
-            <p>Tel: (55) 1234-5678</p>
-            <p>RFC: ABE123456XYZ</p>
+            {storeSettings.address && <p>{storeSettings.address}</p>}
+            {storeSettings.phone && <p>Tel: {storeSettings.phone}</p>}
+            {storeSettings.email && <p>{storeSettings.email}</p>}
+            {storeSettings.rfc && <p>RFC: {storeSettings.rfc}</p>}
           </div>
         </div>
 
@@ -166,12 +227,13 @@ export function ProfessionalTicket({
             <tbody>
               {items.map((item, idx) => (
                 <tr key={idx} className="border-b border-slate-100 last:border-0">
-                  <td className="py-1 text-slate-800 font-medium">{item.quantity}</td>
+                  <td className="py-1 text-slate-800 font-medium">{formatQuantity(item.quantity, item.product.unit)}</td>
                   <td className="py-1 text-slate-700 text-xs">
                     {item.product.name.length > 20 ? item.product.name.substring(0, 20) + "..." : item.product.name}
+                    {item.discount > 0 && <span className="block text-emerald-600">Descuento {item.discount}%</span>}
                   </td>
                   <td className="py-1 text-right font-mono font-semibold text-slate-800">
-                    {formatCurrency(item.product.salePrice * item.quantity)}
+                    {formatCurrency(item.product.salePrice * item.quantity * (1 - item.discount / 100) * (1 + Math.max(0, item.product.tax || 0) / 100))}
                   </td>
                 </tr>
               ))}
@@ -183,10 +245,20 @@ export function ProfessionalTicket({
         <div className="py-2 border-b border-dashed border-slate-300 space-y-1">
           <div className="flex justify-between text-xs">
             <span className="text-slate-500">Subtotal:</span>
+            <span className="font-mono text-slate-700">{formatCurrency(subtotal + discount)}</span>
+          </div>
+          {discount > 0 && (
+            <div className="flex justify-between text-xs text-emerald-700">
+              <span>Descuento:</span>
+              <span className="font-mono">−{formatCurrency(discount)}</span>
+            </div>
+          )}
+          <div className="flex justify-between text-xs">
+            <span className="text-slate-500">Base después de descuento:</span>
             <span className="font-mono text-slate-700">{formatCurrency(subtotal)}</span>
           </div>
           <div className="flex justify-between text-xs">
-            <span className="text-slate-500">IVA (16%):</span>
+            <span className="text-slate-500">Impuestos:</span>
             <span className="font-mono text-slate-700">{formatCurrency(tax)}</span>
           </div>
           <div className="flex justify-between text-base font-bold pt-1 border-t border-slate-200">
@@ -220,21 +292,20 @@ export function ProfessionalTicket({
         {/* QR Code - Compacto */}
         <div className="py-3 text-center">
           <div className="inline-block p-2 bg-white rounded-lg shadow border border-slate-100">
-            <QRCodeSVG 
-              value={`https://abarroteslaesquina.com/verificar/${ticketNumber}`} 
+            <QRCodeSVG
+              value={ticketNumber}
               size={80}
               level="H"
               includeMargin={false}
             />
           </div>
-          <p className="text-xs text-slate-500 mt-1">Escanea para verificar</p>
+          <p className="text-xs text-slate-500 mt-1">Referencia del ticket · {ticketNumber}</p>
         </div>
 
         {/* Mensaje Final - Compacto */}
         <div className="text-center pt-3 border-t-2 border-dashed border-slate-300">
           <p className="text-sm font-bold text-slate-800">¡GRACIAS POR SU COMPRA!</p>
-          <p className="text-xs text-slate-500">Vuelva pronto</p>
-          <p className="text-xs text-slate-400 mt-1">Dios le bendiga 🙏</p>
+          <p className="text-xs text-slate-500">{storeSettings.ticketMessage || "Vuelva pronto"}</p>
         </div>
       </div>
 
@@ -248,7 +319,15 @@ export function ProfessionalTicket({
           <Printer className="w-5 h-5" />
           Imprimir Ticket para Cliente
         </button>
-        
+
+        <button
+          onClick={handleWhatsAppShare}
+          className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 font-semibold text-emerald-800 transition-colors hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200"
+        >
+          <MessageCircle className="h-5 w-5" />
+          Enviar resumen por WhatsApp{customer?.phone ? ` · ${customer.phone}` : ""}
+        </button>
+
         <div className="grid grid-cols-3 gap-2">
           <button
             onClick={handlePrint}
@@ -272,7 +351,7 @@ export function ProfessionalTicket({
             <span className="text-xs font-medium text-slate-600">Compartir</span>
           </button>
         </div>
-        
+
         <button
           onClick={onClose}
           className="w-full mt-2 flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-semibold shadow-lg shadow-emerald-500/30 hover:shadow-xl transition-all"

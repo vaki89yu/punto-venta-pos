@@ -12,33 +12,45 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { useSales } from "@/hooks/useSales";
 import { useProducts } from "@/hooks/useProducts";
-import { useReturns } from "@/hooks/useReturns";
+import { RefundMethod, useReturns } from "@/hooks/useReturns";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
 import { Sale } from "@/types";
-import { Search, RotateCcw, Package, CheckCircle, AlertCircle, Receipt } from "lucide-react";
+import { isFractionalUnit } from "@/lib/professionalFeatures";
+import { Search, RotateCcw, CheckCircle, Receipt } from "lucide-react";
 
 function ReturnsContent() {
   const { showToast } = useToast();
   const { user } = useAuth();
   const { sales } = useSales();
-  const { updateProduct, getProductById } = useProducts();
-  const { returns, createReturn, getTotalRefunded } = useReturns();
+  const { getProductById } = useProducts();
+  const { returns, createReturn, getTotalRefunded, isLoading: isLoadingReturns, error: returnsError } = useReturns();
 
   const [searchTicket, setSearchTicket] = useState("");
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [returnQuantities, setReturnQuantities] = useState<Record<string, number>>({});
   const [reason, setReason] = useState("");
+  const [refundMethod, setRefundMethod] = useState<RefundMethod>("cash");
+  const [isSaving, setIsSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
   const searchResults = sales.filter(
     s => s.ticketNumber.toLowerCase().includes(searchTicket.toLowerCase()) && s.status === "completed"
   );
 
+  const getPreviouslyReturnedQuantity = (saleId: string, saleItemId: string, productId?: string) =>
+    returns
+      .filter((record) => record.saleId === saleId && record.status === "approved")
+      .flatMap((record) => record.items)
+      .filter((item) => item.saleItemId === saleItemId || (!item.saleItemId && item.productId === productId))
+      .reduce((sum, item) => sum + item.quantityReturned, 0);
+
   const handleSelectSale = (sale: Sale) => {
     setSelectedSale(sale);
     const initial: Record<string, number> = {};
-    sale.items.forEach(item => { initial[item.productId] = 0; });
+    sale.items.forEach(item => { initial[item.id] = 0; });
     setReturnQuantities(initial);
+    setReason("");
+    setRefundMethod("cash");
     setShowModal(true);
   };
 
@@ -49,59 +61,30 @@ function ReturnsContent() {
   const calculateRefund = () => {
     if (!selectedSale) return 0;
     return selectedSale.items.reduce((sum, item) => {
-      const qty = returnQuantities[item.productId] || 0;
-      return sum + qty * item.price;
+      const qty = returnQuantities[item.id] || 0;
+      const availableQuantity = item.quantity - getPreviouslyReturnedQuantity(selectedSale.id, item.id, item.productId);
+      const refundableQuantity = Math.min(qty, Math.max(0, availableQuantity));
+      const refundPerUnit = item.quantity > 0 ? item.total / item.quantity : 0;
+      return sum + refundableQuantity * refundPerUnit;
     }, 0);
   };
 
-  const handleConfirmReturn = () => {
+  const handleConfirmReturn = async () => {
     if (!selectedSale || !user) return;
-
-    const itemsToReturn = selectedSale.items
-      .filter(item => (returnQuantities[item.productId] || 0) > 0)
-      .map(item => {
-        const product = getProductById(item.productId);
-        const qty = returnQuantities[item.productId];
-        return {
-          productId: item.productId,
-          productName: product?.name || "Producto",
-          quantityReturned: qty,
-          price: item.price,
-          refundAmount: qty * item.price,
-        };
-      });
-
-    if (itemsToReturn.length === 0) {
-      showToast("Selecciona al menos un producto para devolver", "warning");
-      return;
-    }
-
-    if (!reason.trim()) {
-      showToast("Ingresa el motivo de la devolución", "warning");
-      return;
-    }
-
-    // Update inventory
-    itemsToReturn.forEach(item => {
-      const product = getProductById(item.productId);
-      if (product) {
-        updateProduct(item.productId, { stock: product.stock + item.quantityReturned });
-      }
-    });
-
-    createReturn({
-      saleId: selectedSale.id,
-      ticketNumber: selectedSale.ticketNumber,
-      items: itemsToReturn,
-      totalRefund: calculateRefund(),
-      reason,
-      processedBy: user.id,
-    });
-
-    showToast("Devolución procesada exitosamente", "success");
-    setShowModal(false);
-    setSelectedSale(null);
-    setReason("");
+    if (user.role !== "admin" && user.role !== "manager") return showToast("La aprobación de devoluciones requiere a un gerente o administrador.", "error");
+    if (!reason.trim()) return showToast("Ingresa el motivo de la devolución", "warning");
+    const items = selectedSale.items.map((item) => ({ saleItemId: item.id, quantityReturned: returnQuantities[item.id] || 0 })).filter((item) => item.quantityReturned > 0);
+    if (!items.length) return showToast("Selecciona al menos una cantidad para devolver.", "warning");
+    setIsSaving(true);
+    try {
+      await createReturn({ saleId: selectedSale.id, reason: reason.trim(), refundMethod, items });
+      showToast("Devolución, reembolso registrado, stock, lotes y auditoría guardados en PostgreSQL", "success");
+      setShowModal(false);
+      setSelectedSale(null);
+      setReason("");
+      setReturnQuantities({});
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo procesar la devolución.", "error"); }
+    finally { setIsSaving(false); }
   };
 
   return (
@@ -176,7 +159,9 @@ function ReturnsContent() {
         <Card>
           <CardHeader title="Historial de Devoluciones" />
           <CardContent>
-            {returns.length === 0 ? (
+            {returnsError && <p className="mb-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{returnsError}</p>}
+            {isLoadingReturns && returns.length === 0 && <p className="py-4 text-center text-slate-500">Cargando devoluciones del servidor…</p>}
+            {returns.length === 0 && !isLoadingReturns ? (
               <div className="text-center py-8">
                 <RotateCcw className="w-12 h-12 text-slate-300 mx-auto mb-2" />
                 <p className="text-slate-400">No hay devoluciones registradas</p>
@@ -218,23 +203,30 @@ function ReturnsContent() {
                 <div className="space-y-2">
                   {selectedSale.items.map(item => {
                     const product = getProductById(item.productId);
+                    const previouslyReturned = getPreviouslyReturnedQuantity(selectedSale.id, item.id, item.productId);
+                    const maxReturn = Math.max(0, item.quantity - previouslyReturned);
+                    const step = isFractionalUnit(product?.unit || "pieza") ? 0.05 : 1;
+                    const quantity = returnQuantities[item.id] || 0;
                     return (
-                      <div key={item.productId} className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-xl">
+                      <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
                         <div className="flex-1">
-                          <p className="font-medium text-sm">{product?.name || "Producto"}</p>
+                          <p className="text-sm font-medium">{product?.name || "Producto"}</p>
                           <p className="text-xs text-slate-500">
-                            Comprado: {item.quantity} x {formatCurrency(item.price)}
+                            Comprado: {item.quantity} {product?.unit || "unid."} · {formatCurrency(item.price)} / {product?.unit || "unid."}
                           </p>
+                          {previouslyReturned > 0 && <p className="text-xs font-medium text-amber-700">Ya devuelto: {previouslyReturned} · restante {maxReturn}</p>}
                         </div>
                         <div className="flex items-center gap-2">
                           <button
-                            onClick={() => handleQuantityChange(item.productId, (returnQuantities[item.productId] || 0) - 1, item.quantity)}
-                            className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center font-bold"
-                          >-</button>
-                          <span className="w-8 text-center font-semibold">{returnQuantities[item.productId] || 0}</span>
+                            disabled={quantity <= 0}
+                            onClick={() => handleQuantityChange(item.id, quantity <= step ? 0 : quantity - step, maxReturn)}
+                            className="h-8 w-8 rounded-lg bg-slate-100 font-bold hover:bg-slate-200 disabled:opacity-40"
+                          >−</button>
+                          <span className="w-12 text-center text-sm font-semibold">{quantity}</span>
                           <button
-                            onClick={() => handleQuantityChange(item.productId, (returnQuantities[item.productId] || 0) + 1, item.quantity)}
-                            className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center font-bold"
+                            disabled={quantity >= maxReturn}
+                            onClick={() => handleQuantityChange(item.id, Math.min(maxReturn, quantity + step), maxReturn)}
+                            className="h-8 w-8 rounded-lg bg-slate-100 font-bold hover:bg-slate-200 disabled:opacity-40"
                           >+</button>
                         </div>
                       </div>
@@ -250,6 +242,14 @@ function ReturnsContent() {
                 onChange={(e) => setReason(e.target.value)}
               />
 
+              <label className="block text-sm font-medium text-slate-700">Método de reembolso
+                <select value={refundMethod} onChange={(event) => setRefundMethod(event.target.value as RefundMethod)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-slate-900">
+                  <option value="cash">Efectivo (registrar salida de caja)</option>
+                  <option value="card">Tarjeta (reembolso manual en terminal)</option>
+                  <option value="transfer">Transferencia (reembolso manual)</option>
+                </select>
+              </label>
+              {refundMethod !== "cash" && <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">El POS solo registra el reembolso. Debes procesarlo por separado en tu terminal o banco; no está conectado a un procesador de pagos.</p>}
               <div className="p-4 bg-rose-50 rounded-xl border border-rose-200">
                 <div className="flex justify-between items-center">
                   <span className="font-medium text-rose-700">Total a Reembolsar</span>
@@ -261,8 +261,8 @@ function ReturnsContent() {
                 <Button variant="secondary" fullWidth onClick={() => setShowModal(false)}>
                   Cancelar
                 </Button>
-                <Button variant="danger" fullWidth onClick={handleConfirmReturn} leftIcon={<CheckCircle className="w-4 h-4" />}>
-                  Confirmar Devolución
+                <Button variant="danger" fullWidth onClick={handleConfirmReturn} disabled={isSaving || calculateRefund() <= 0 || (user?.role !== "admin" && user?.role !== "manager")} isLoading={isSaving} leftIcon={<CheckCircle className="w-4 h-4" />}>
+                  Confirmar reembolso y devolución
                 </Button>
               </div>
             </div>

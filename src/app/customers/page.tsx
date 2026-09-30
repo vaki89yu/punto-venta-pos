@@ -12,7 +12,6 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { Customer } from "@/types";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { STORAGE_KEYS } from "@/data/seed";
 import { Search, Plus, User, Phone, Mail, MapPin, ShoppingBag, Edit2, Trash2 } from "lucide-react";
 
 function CustomersContent() {
@@ -22,9 +21,16 @@ function CustomersContent() {
   const [showAddModal, setShowAddModal] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
-    if (stored) setCustomers(JSON.parse(stored));
-  }, []);
+    let active = true;
+    fetch("/api/customers", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json().catch(() => null) as { customers?: Customer[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudieron cargar los clientes.");
+        if (active) setCustomers(result?.customers || []);
+      })
+      .catch((error: unknown) => showToast(error instanceof Error ? error.message : "No se pudo cargar la información.", "error"));
+    return () => { active = false; };
+  }, [showToast]);
 
   const filteredCustomers = customers.filter((c) =>
     c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -32,20 +38,15 @@ function CustomersContent() {
     c.email?.toLowerCase().includes(searchQuery)
   );
 
-  const handleAddCustomer = (formData: any) => {
-    const newCustomer: Customer = {
-      ...formData,
-      id: Math.random().toString(36).substring(2, 9),
-      totalSpent: 0,
-      totalPurchases: 0,
-      isActive: true,
-      createdAt: new Date(),
-    };
-    const updated = [...customers, newCustomer];
-    setCustomers(updated);
-    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(updated));
-    setShowAddModal(false);
-    showToast("Cliente agregado exitosamente", "success");
+  const handleAddCustomer = async (formData: any) => {
+    try {
+      const response = await fetch("/api/customers", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(formData) });
+      const result = await response.json().catch(() => null) as { customer?: Customer; error?: { message?: string } } | null;
+      if (!response.ok || !result?.customer) throw new Error(result?.error?.message || "No se pudo registrar el cliente.");
+      setCustomers((current) => [result.customer!, ...current]);
+      setShowAddModal(false);
+      showToast("Cliente guardado en PostgreSQL", "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo registrar el cliente.", "error"); }
   };
 
   return (

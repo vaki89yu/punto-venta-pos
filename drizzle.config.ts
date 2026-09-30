@@ -1,13 +1,19 @@
 import type { Config } from "drizzle-kit";
 import * as dotenv from "dotenv";
 
-dotenv.config();
+dotenv.config({ path: [".env.local", ".env"] });
+
+// Prefer the direct endpoint for schema changes; Neon also provides the pooled DATABASE_URL for runtime traffic.
+const databaseUrl = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("Falta DATABASE_URL. Configura PostgreSQL antes de ejecutar comandos de Drizzle.");
+}
 
 export default {
   dialect: "postgresql",
   schema: "./src/db/schema.ts",
   out: "./drizzle",
   dbCredentials: {
-    url: process.env.DATABASE_URL || "postgresql://postgres:postgres@127.0.0.1:5432/app_db",
+    url: databaseUrl,
   },
 } satisfies Config;

@@ -10,6 +10,7 @@ import { ProductGrid } from "@/components/pos/ProductGrid";
 import { Cart } from "@/components/pos/Cart";
 import { InnovativeCheckout } from "@/components/pos/InnovativeCheckout";
 import { QuickProductModal } from "@/components/pos/QuickProductModal";
+import { WeighedProductModal } from "@/components/pos/WeighedProductModal";
 import { BarcodeScanner, ScanFeedback } from "@/components/scanner/BarcodeScanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -17,11 +18,11 @@ import { Modal } from "@/components/ui/Modal";
 import { useProducts } from "@/hooks/useProducts";
 import { useUsbScanner } from "@/hooks/useUsbScanner";
 import { normalizeBarcode } from "@/lib/productStore";
+import { formatQuantity, getSellableStock, isFractionalUnit } from "@/lib/professionalFeatures";
 import { createUsbInputReader } from "@/lib/usbInputReader";
 import { useSales } from "@/hooks/useSales";
 import { useAuth } from "@/contexts/AuthContext";
-import { Product, Customer, Category } from "@/types";
-import { STORAGE_KEYS } from "@/data/seed";
+import { Product, Customer, Category, PaymentMethod } from "@/types";
 import { formatCurrency } from "@/lib/utils";
 import {
   Scan,
@@ -39,7 +40,7 @@ function POSContent() {
   const { user } = useAuth();
   const { products, getProductByBarcode, searchProducts, addProduct, updateProduct } = useProducts();
   const { createSale } = useSales();
-  const { items, addItem, clearCart, subtotal, tax, total, itemCount } = useCart();
+  const { items, addItem, clearCart, subtotal, discount, tax, total, itemCount } = useCart();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -47,6 +48,7 @@ function POSContent() {
 
   const [showScanner, setShowScanner] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
+  const [weighedProduct, setWeighedProduct] = useState<Product | null>(null);
   const [scannerContinuous, setScannerContinuous] = useState(false);
 
   const [barcodeInput, setBarcodeInput] = useState("");
@@ -65,12 +67,44 @@ function POSContent() {
   // Vista móvil: productos o carrito
   const [mobileView, setMobileView] = useState<"products" | "cart">("products");
 
+  const addProductToCart = useCallback((product: Product, quantity?: number) => {
+    if (isFractionalUnit(product.unit) && quantity === undefined) {
+      setWeighedProduct(product);
+      return true;
+    }
+    const added = addItem(product, quantity);
+    if (!added) {
+      showToast(`Stock disponible insuficiente: ${formatQuantity(getSellableStock(product.stock, product.id), product.unit)}`, "warning");
+      return false;
+    }
+    return true;
+  }, [addItem, showToast]);
+
+  const confirmWeighedProduct = (product: Product, quantity: number) => {
+    if (addItem(product, quantity)) {
+      setScannedCount((count) => count + 1);
+      showToast(`${product.name} · ${formatQuantity(quantity, product.unit)} agregado`, "success");
+    } else {
+      showToast("No hay suficiente stock disponible para esa cantidad", "warning");
+    }
+  };
+
   useEffect(() => {
-    const storedCategories = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
-    const storedCustomers = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
-    if (storedCategories) setCategories(JSON.parse(storedCategories));
-    if (storedCustomers) setCustomers(JSON.parse(storedCustomers));
-  }, []);
+    let active = true;
+    Promise.all([
+      fetch("/api/categories", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
+        const result = await response.json().catch(() => null) as { categories?: Category[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudieron cargar las categorías.");
+        if (active) setCategories(result?.categories || []);
+      }),
+      fetch("/api/customers", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
+        const result = await response.json().catch(() => null) as { customers?: Customer[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudieron cargar los clientes.");
+        if (active) setCustomers(result?.customers || []);
+      }),
+    ]).catch((error: unknown) => showToast(error instanceof Error ? error.message : "No se pudieron cargar datos del punto de venta.", "error"));
+    return () => { active = false; };
+  }, [showToast]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -116,14 +150,15 @@ function POSContent() {
       lastScanSource.current = source;
       const product = getProductByBarcode(barcode);
 
-      // CASO 1: El producto YA EXISTE → agregar al carrito para vender
+      // CASO 1: El producto YA EXISTE → agregar al carrito o solicitar el peso
       if (product) {
-        if (product.stock > 0) {
-          addItem(product);
-          setScannedCount((c) => c + 1);
+        const availableStock = getSellableStock(product.stock, product.id);
+        if (availableStock > 0) {
+          addProductToCart(product);
+          if (!isFractionalUnit(product.unit)) setScannedCount((c) => c + 1);
           setScanFeedback({ type: "found", product, barcode });
           playBeep(true);
-          showToast(`${product.name} · ${formatCurrency(product.salePrice)}`, "success");
+          showToast(`${product.name} · ${formatCurrency(product.salePrice)} / ${product.unit}`, "success");
 
           setTimeout(() => setScanFeedback(null), 1300);
           if (source === "camera" && !scannerContinuous) {
@@ -154,7 +189,7 @@ function POSContent() {
         }, 1100);
       }
     },
-    [getProductByBarcode, addItem, showToast, scannerContinuous, playBeep]
+    [getProductByBarcode, addProductToCart, showToast, scannerContinuous, playBeep]
   );
 
   const usbScannerEnabled = !!user && !showScanner && !showCheckout &&
@@ -205,18 +240,27 @@ function POSContent() {
     }
   };
 
-  const handleSaveNewProduct = (
+  const handleSaveNewProduct = async (
     productData: Omit<Product, "id" | "createdAt" | "updatedAt">,
     addToCart: boolean
   ) => {
-    const created = addProduct(productData);
-    setNewBarcode(null);
-    if (addToCart) {
-      addItem(created);
-      setScannedCount((c) => c + 1);
-      showToast(`"${created.name}" registrado y agregado al carrito`, "success");
-    } else {
-      showToast(`"${created.name}" registrado en inventario`, "success");
+    try {
+      const existingProduct = getProductByBarcode(productData.barcode);
+      const created = existingProduct
+        ? await updateProduct(existingProduct.id, { stock: existingProduct.stock + Number(productData.stock) }, "Entrada de inventario rápida desde escáner; conserva el precio registrado.")
+        : await addProduct(productData);
+      setNewBarcode(null);
+      if (addToCart) {
+        addProductToCart(created);
+        if (!isFractionalUnit(created.unit)) setScannedCount((count) => count + 1);
+        showToast(isFractionalUnit(created.unit)
+          ? `"${created.name}" guardado; captura el peso para venderlo`
+          : `"${created.name}" guardado en PostgreSQL y agregado al carrito`, "success");
+      } else {
+        showToast(existingProduct ? `Existencia de ${created.name} actualizada en PostgreSQL` : `"${created.name}" guardado en PostgreSQL`, "success");
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "No se pudo guardar el producto.", "error");
     }
   };
 
@@ -229,34 +273,29 @@ function POSContent() {
     }
   };
 
-  const handleCheckout = (paymentData: {
-    method: string;
+  const handleCheckout = async (paymentData: {
+    method: Exclude<PaymentMethod, "qr">;
+    ticketNumber: string;
     cashReceived?: number;
     change?: number;
     paymentDetails: { method: "cash" | "card" | "transfer"; amount: number; reference?: string }[];
-  }) => {
-    if (!user) return;
-    createSale(
+  }): Promise<boolean> => {
+    if (!user) throw new Error("La sesión expiró. Inicia sesión nuevamente.");
+    await createSale(
       items,
       selectedCustomer,
       user.id,
-      paymentData.method as any,
+      paymentData.method,
       paymentData.paymentDetails,
       paymentData.cashReceived,
-      paymentData.change
+      paymentData.change,
+      paymentData.ticketNumber
     );
-
-    // Descontar el stock vendido del inventario
-    items.forEach((item) => {
-      const current = getProductByBarcode(item.product.barcode) || item.product;
-      const newStock = Math.max(0, current.stock - item.quantity);
-      updateProduct(current.id, { stock: newStock });
-    });
-
     clearCart();
-    setShowCheckout(false);
+    setSelectedCustomer(null);
     setMobileView("products");
-    showToast("Venta completada · Inventario actualizado", "success");
+    showToast("Venta confirmada en PostgreSQL; inventario y caja actualizados de forma atómica", "success");
+    return true;
   };
 
   return (
@@ -348,7 +387,7 @@ function POSContent() {
 
           {/* Grid de productos */}
           <div className="flex-1 min-h-0">
-            <ProductGrid products={products} categories={categories} onAddToCart={addItem} />
+            <ProductGrid products={products} categories={categories} onAddToCart={addProductToCart} />
           </div>
         </div>
 
@@ -358,7 +397,12 @@ function POSContent() {
             mobileView === "products" ? "hidden lg:block" : "block"
           }`}
         >
-          <Cart customers={customers} onCheckout={() => setShowCheckout(true)} />
+          <Cart
+            customers={customers}
+            selectedCustomer={selectedCustomer}
+            onCustomerChange={setSelectedCustomer}
+            onCheckout={() => setShowCheckout(true)}
+          />
         </div>
       </div>
 
@@ -416,12 +460,20 @@ function POSContent() {
         onScanAgain={handleScanAgain}
       />
 
+      <WeighedProductModal
+        key={weighedProduct?.id || "weighed-product-closed"}
+        product={weighedProduct}
+        onClose={() => setWeighedProduct(null)}
+        onConfirm={confirmWeighedProduct}
+      />
+
       {/* Checkout */}
       <InnovativeCheckout
         isOpen={showCheckout}
         onClose={() => setShowCheckout(false)}
         total={total}
         subtotal={subtotal}
+        discount={discount}
         tax={tax}
         items={items}
         customer={selectedCustomer}
@@ -443,8 +495,8 @@ function POSContent() {
             <button
               key={p.id}
               onClick={() => {
-                if (p.stock > 0) {
-                  addItem(p);
+                if (getSellableStock(p.stock, p.id) > 0) {
+                  addProductToCart(p);
                   playBeep(true);
                   showToast(`${p.name} agregado`, "success");
                 }
@@ -484,7 +536,7 @@ function POSContent() {
               <button
                 key={product.id}
                 onClick={() => {
-                  addItem(product);
+                  addProductToCart(product);
                   setShowSearchModal(false);
                   setSearchResults([]);
                 }}
