@@ -63,86 +63,13 @@ Fuera del campo de código, el detector global sigue aceptando ráfagas de al me
 
 ---
 
-## 🚀 Despliegue en Vercel
+## 🗄️ PostgreSQL, administrador inicial y Vercel
 
-### 1. Subir a GitHub
+El sistema necesita PostgreSQL y una sesión firmada para operar. No hay una contraseña ni un conjunto de ventas ficticias predeterminados. Sigue la [guía paso a paso de PostgreSQL y despliegue](DEPLOY.md): crea `.env.local` con tus secretos, ejecuta `npm run db:push` y luego `npm run db:initialize`. El inicializador crea solo el primer administrador, una categoría inicial y los ajustes básicos; no crea ventas ni productos de demostración.
 
-```bash
-git init
-git add .
-git commit -m "Sistema POS Abarrotes La Esquina"
-git branch -M main
-git remote add origin https://github.com/TU_USUARIO/pos-abarrotes.git
-git push -u origin main
-```
-
-### 2. Crear base de datos
-
-Opciones gratuitas compatibles con Vercel:
-
-- **[Neon](https://neon.tech)** (recomendado) — PostgreSQL serverless
-- **[Supabase](https://supabase.com)**
-- **Vercel Postgres** (desde el dashboard de Vercel)
-
-Copia la cadena de conexión (`DATABASE_URL`).
-
-### 3. Importar en Vercel
-
-1. Entra a [vercel.com/new](https://vercel.com/new)
-2. Selecciona **Import Git Repository** → elige tu repo
-3. En **Environment Variables** agrega:
-
-   | Key | Value |
-   |---|---|
-   | `DATABASE_URL` | `postgresql://...` (tu cadena de conexión) |
-
-4. Haz clic en **Deploy**
-
-### 4. Aplicar el esquema de la base de datos
-
-Una vez desplegado, desde tu máquina local:
-
-```bash
-# Crea un archivo .env con la DATABASE_URL de producción
-echo 'DATABASE_URL="postgresql://..."' > .env
-
-npx drizzle-kit push
-```
-
----
-
-## 💻 Desarrollo local
+En Vercel configura `DATABASE_URL` y `SESSION_SECRET` en los ambientes necesarios y vuelve a desplegar. Antes de usar el POS, verifica `/api/health`: debe responder `ok: true`, `database: "connected"` y `sessionConfigured: true`. No compartas ni subas las credenciales; `.env.local` está excluido de Git.
 
 La fuente Inter se sirve localmente mediante `@fontsource-variable/inter`; la compilación no necesita descargar fuentes de Google Fonts.
-
-```bash
-# 1. Instalar dependencias
-npm install
-
-# 2. Configurar variables de entorno
-cp .env.example .env
-# Edita .env con tu DATABASE_URL
-
-# 3. Aplicar esquema a la base de datos
-npx drizzle-kit push
-
-# 4. Iniciar servidor de desarrollo
-npm run dev
-```
-
-Abre [http://localhost:3000](http://localhost:3000)
-
----
-
-## 🔑 Credenciales de demostración
-
-| Rol | Email | Contraseña |
-|---|---|---|
-| Administrador | `admin@pos.com` | `admin123` |
-| Gerente | `gerente@pos.com` | `gerente123` |
-| Cajero | `cajero@pos.com` | `cajero123` |
-
-> ⚠️ **Importante:** Cambia estas credenciales antes de usar en producción real.
 
 ---
 

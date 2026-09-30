@@ -1,382 +1,102 @@
-# 🚀 Guía de Despliegue — Paso a Paso
+# Guía de base de datos y despliegue
 
-Guía completa para poner en marcha el Sistema POS en producción con GitHub + Vercel.
+El POS usa PostgreSQL para usuarios, catálogo, ventas, caja, devoluciones y operaciones. **No inicies sesión con credenciales de demostración ni uses el sistema como operativo hasta que `/api/health` confirme que la base está conectada.** La inicialización no inventa productos, ventas ni clientes.
 
-**Tiempo estimado:** 15–20 minutos
-**Costo:** $0 (todo con planes gratuitos)
+## 1. Requisitos
 
----
+- Node.js 20 o superior y npm.
+- Un proyecto PostgreSQL administrado. Esta guía usa [Neon](https://neon.tech); también sirven Supabase u otro PostgreSQL accesible desde Vercel.
+- El repositorio del POS en tu computadora.
 
-## 🗃️ Catálogo Open Food Facts (opcional)
+## 2. Crear PostgreSQL en Neon
 
-El catálogo de referencia Open Food Facts (México) **no es necesario para desplegar**: si
-`src/data/openFoodFactsMexico.json` está vacío, la app funciona normal y en Inventario se
-muestra el aviso "catálogo todavía vacío".
+1. Crea un proyecto PostgreSQL en Neon.
+2. Abre **Connection Details** y copia la cadena de conexión completa. Debe empezar con `postgresql://` y normalmente incluir `sslmode=require`.
+3. Guarda la cadena como secreto: contiene usuario y contraseña de la base. No la pegues en mensajes, capturas ni archivos de Git.
 
-Para poblarlo (requiere acceso de red a `openfoodfacts.org`, que no siempre está disponible
-en entornos de CI):
+Usa una base/proyecto distinto para **Preview** y **Production** si vas a probar cambios; así las pruebas no alteran los datos de la tienda.
+
+## 3. Configurar las variables localmente
+
+En la raíz del repositorio, crea `.env.local` (está excluido de Git):
+
+```bash
+cp .env.example .env.local
+```
+
+En Windows puedes copiar `.env.example` como `.env.local` desde el Explorador o PowerShell. Edita `.env.local` y sustituye los ejemplos por valores reales:
+
+```dotenv
+DATABASE_URL="postgresql://USUARIO:CONTRASENA@HOST/BASE?sslmode=require"
+SESSION_SECRET="UN_SECRETO_ALEATORIO_LARGO_DE_32_CARACTERES_O_MAS"
+INITIAL_ADMIN_EMAIL="tu-correo@negocio.com"
+INITIAL_ADMIN_PASSWORD="UNA_CONTRASENA_UNICA_DE_14_CARACTERES_O_MAS"
+INITIAL_ADMIN_NAME="Administrador"
+STORE_NAME="Nombre de tu tienda"
+```
+
+Genera `SESSION_SECRET` con un generador criptográfico, por ejemplo:
+
+```bash
+openssl rand -base64 48
+```
+
+La contraseña inicial debe tener al menos 14 caracteres; no uses `admin123` ni una contraseña de ejemplo. No compartas estos secretos ni los agregues al repositorio.
+
+## 4. Crear el esquema e inicializar la cuenta
+
+Desde la raíz del proyecto:
+
+```bash
+npm install
+npm run db:push
+npm run db:initialize
+```
+
+- `db:push` crea o actualiza las tablas de PostgreSQL según `src/db/schema.ts`.
+- `db:initialize` crea el primer administrador, la categoría **General** y los ajustes básicos de tienda. Es idempotente: si el correo ya existe, no cambia su contraseña ni su rol.
+- No se generan ventas, clientes ni productos ficticios.
+
+Si `db:push` propone o reporta un cambio destructivo, detente y revisa el cambio antes de aceptarlo. No ejecutes una migración sobre Production sin respaldo.
+
+## 5. Probar localmente
+
+```bash
+npm run dev
+```
+
+Abre `http://localhost:3000/api/health`. Debe responder HTTP 200 con `"ok": true`, `"database": "connected"` y `"sessionConfigured": true`. Después abre `http://localhost:3000/login` e inicia sesión con el correo y la contraseña que definiste en `.env.local`.
+
+Si el health check muestra `not_configured`, `schema_missing` o `sessionConfigured: false`, no uses el POS: revisa `DATABASE_URL`, `SESSION_SECRET` y que `db:push` haya terminado correctamente.
+
+Para probar una venta en la base real, crea primero productos con datos propios, existencias y precios reales, abre caja y revisa que la venta aparezca después de recargar. Haz esta prueba en una base de prueba separada si no quieres conservarla en Production.
+
+## 6. Configurar Vercel
+
+1. Importa el repositorio en Vercel.
+2. En **Project → Settings → Environment Variables**, define `DATABASE_URL` y `SESSION_SECRET` para los ambientes que vas a usar (**Production** y, si corresponde, **Preview**).
+3. Para Preview, es preferible usar una base de prueba separada de Production.
+4. Guarda las variables y vuelve a desplegar para que las funciones las reciban.
+5. Abre `https://TU-DOMINIO/api/health`. No declares el POS listo hasta que responda HTTP 200 con `ok: true`.
+
+La cuenta inicial se crea ejecutando `npm run db:initialize` contra la misma base configurada para el ambiente correspondiente. Los valores `INITIAL_ADMIN_EMAIL` y `INITIAL_ADMIN_PASSWORD` se necesitan para esa inicialización, no para cada inicio de sesión; no es necesario dejarlos en Vercel después si se inicializa desde una computadora segura.
+
+## 7. Operación y seguridad
+
+- Mantén estable `SESSION_SECRET`; cambiarlo invalida las sesiones activas.
+- Restringe quién puede ver o editar las variables de entorno y habilita autenticación en Vercel.
+- Configura copias de seguridad y verifica que puedas restaurarlas.
+- No uses la misma base para pruebas y ventas reales.
+- Los pagos con tarjeta y transferencia se registran como confirmados externamente: el POS no se conecta a terminales ni bancos. El timbrado CFDI requiere un PAC; registrar una solicitud no timbra una factura.
+- El catálogo Open Food Facts es opcional y de referencia; los precios y existencias deben ser los de tu negocio.
+
+## Catálogo Open Food Facts (opcional)
+
+El catálogo de referencia se consulta paginado desde el servidor. Los productos importados aparecen inactivos y pendientes de precio; no completan precios ni existencias de tu tienda.
 
 ```bash
 npm run catalog:import -- --all
-npm run build   # incluir el catálogo en el despliegue
-```
-
-Notas:
-
-- El JSON vive sólo en el servidor y se consume **paginado** vía `/api/catalog/openfoodfacts`;
-  nunca viaja completo al navegador ni se guarda en `localStorage`.
-- Si el archivo creciera demasiado para el bundle de Vercel, dividirlo en shards o moverlo a
-  la base de datos (tabla de catálogo) es el siguiente paso previsto — no incrementar el
-  bundle del cliente.
-- Los productos OFF aparecen **inactivos y pendientes de precio**; precios y existencias son
-  siempre datos propios de la tienda.
-- Atribución obligatoria: ODbL 1.0 (base de datos), DbCL 1.0 (contenido), CC BY-SA 3.0 (fotos).
-
----
-
-## 📋 Requisitos previos
-
-Antes de empezar necesitas:
-
-- [ ] **Node.js 20+** instalado → [nodejs.org](https://nodejs.org)
-- [ ] **Git** instalado → [git-scm.com](https://git-scm.com)
-- [ ] Cuenta de **GitHub** → [github.com/signup](https://github.com/signup)
-- [ ] Cuenta de **Vercel** → [vercel.com/signup](https://vercel.com/signup) (entra con GitHub)
-
-Verifica que tengas todo:
-
-```bash
-node --version    # debe mostrar v20.x o superior
-git --version     # debe mostrar 2.x
-```
-
----
-
-## PASO 1 · Descargar el proyecto a tu computadora
-
-Descarga los archivos del proyecto y colócalos en una carpeta, por ejemplo:
-
-```
-C:\Proyectos\pos-abarrotes     (Windows)
-~/Proyectos/pos-abarrotes      (Mac/Linux)
-```
-
-Abre una terminal **dentro de esa carpeta**:
-
-- **Windows:** clic derecho en la carpeta → "Abrir en Terminal"
-- **Mac:** clic derecho → "Nuevo terminal en la carpeta"
-
----
-
-## PASO 2 · Crear la base de datos (Neon)
-
-### 2.1 Crear cuenta
-
-1. Entra a **[neon.tech](https://neon.tech)**
-2. Clic en **Sign Up** → entra con GitHub
-3. Clic en **Create a project**
-
-### 2.2 Configurar el proyecto
-
-| Campo | Valor |
-|---|---|
-| Project name | `pos-abarrotes` |
-| Postgres version | `16` (por defecto) |
-| Region | `US East (Ohio)` — la más cercana a Vercel |
-
-Clic en **Create project**
-
-### 2.3 Copiar la cadena de conexión
-
-Verás una pantalla con **Connection string**. Copia el texto completo:
-
-```
-postgresql://neondb_owner:AbC123xyz@ep-cool-name-123456.us-east-2.aws.neon.tech/neondb?sslmode=require
-```
-
-> 📌 **Guárdala en un bloc de notas.** La usarás 2 veces.
-
----
-
-## PASO 3 · Configurar el proyecto localmente
-
-### 3.1 Instalar dependencias
-
-En la terminal, dentro de la carpeta del proyecto:
-
-```bash
-npm install
-```
-
-Espera 1–2 minutos.
-
-### 3.2 Crear el archivo `.env`
-
-**Windows (PowerShell):**
-```powershell
-echo 'DATABASE_URL="PEGA_AQUI_TU_CADENA_DE_NEON"' > .env
-```
-
-**Mac / Linux:**
-```bash
-echo 'DATABASE_URL="PEGA_AQUI_TU_CADENA_DE_NEON"' > .env
-```
-
-> ⚠️ Reemplaza `PEGA_AQUI_TU_CADENA_DE_NEON` por la cadena real de Neon.
-
-El archivo `.env` debe quedar así:
-```
-DATABASE_URL="postgresql://neondb_owner:AbC123xyz@ep-cool-name-123456.us-east-2.aws.neon.tech/neondb?sslmode=require"
-```
-
-### 3.3 Crear las tablas en la base de datos
-
-```bash
-npm run db:push
-```
-
-Deberías ver:
-```
-[✓] Changes applied
-```
-
-### 3.4 Probar que funciona localmente
-
-```bash
-npm run dev
-```
-
-Abre **[http://localhost:3000](http://localhost:3000)**
-
-Inicia sesión con:
-- Email: `admin@pos.com`
-- Contraseña: `admin123`
-
-✅ Si ves el dashboard, todo va bien. Detén el servidor con `Ctrl + C`.
-
----
-
-## PASO 4 · Subir el proyecto a GitHub
-
-### 4.1 Crear el repositorio en GitHub
-
-1. Entra a **[github.com/new](https://github.com/new)**
-2. Llena los campos:
-
-   | Campo | Valor |
-   |---|---|
-   | Repository name | `pos-abarrotes` |
-   | Description | `Sistema POS para tienda de abarrotes` |
-   | Visibilidad | **Private** (recomendado) o Public |
-   | Initialize with README | ❌ **NO marcar** |
-   | Add .gitignore | ❌ **None** |
-   | Choose a license | ❌ **None** |
-
-3. Clic en **Create repository**
-
-### 4.2 Subir el código
-
-GitHub te mostrará una página con comandos. **Ignórala** y usa estos:
-
-```bash
-git init
-git add .
-git commit -m "Sistema POS Abarrotes La Esquina"
-git branch -M main
-git remote add origin https://github.com/TU_USUARIO/pos-abarrotes.git
-git push -u origin main
-```
-
-> 🔁 Reemplaza `TU_USUARIO` por tu nombre de usuario de GitHub.
-
-### 4.3 Autenticación
-
-Si te pide usuario y contraseña:
-
-- **Username:** tu usuario de GitHub
-- **Password:** ⚠️ **NO** es tu contraseña normal. Necesitas un **token**:
-  1. Ve a [github.com/settings/tokens](https://github.com/settings/tokens)
-  2. **Generate new token** → **Generate new token (classic)**
-  3. Note: `pos-deploy`
-  4. Expiration: `90 days`
-  5. Marca la casilla ✅ **repo**
-  6. Clic en **Generate token**
-  7. **Copia el token** (solo se muestra una vez) y pégalo como contraseña
-
-### 4.4 Verificar
-
-Recarga la página de tu repositorio en GitHub. Debes ver todos los archivos.
-
-> ✅ **Comprueba que NO aparezca el archivo `.env`** — está protegido por `.gitignore`.
-
----
-
-## PASO 5 · Desplegar en Vercel
-
-### 5.1 Importar el repositorio
-
-1. Entra a **[vercel.com/new](https://vercel.com/new)**
-2. Si es tu primera vez: **Continue with GitHub** → autoriza el acceso
-3. Busca `pos-abarrotes` en la lista
-4. Clic en **Import**
-
-### 5.2 Configurar el proyecto
-
-Vercel detecta Next.js automáticamente. **No cambies nada** excepto:
-
-Despliega la sección **Environment Variables** y agrega:
-
-| Key | Value |
-|---|---|
-| `DATABASE_URL` | Pega tu cadena de Neon completa |
-
-Clic en **Add**.
-
-### 5.3 Desplegar
-
-Clic en el botón **Deploy**.
-
-Espera 2–3 minutos. Verás el progreso del build.
-
-### 5.4 ¡Listo!
-
-Cuando termine verás confetti 🎉 y tu URL:
-
-```
-https://pos-abarrotes.vercel.app
-```
-
-Clic en **Visit** para abrirla.
-
----
-
-## PASO 6 · Verificación final
-
-Comprueba que todo funcione:
-
-- [ ] Abre la URL de Vercel
-- [ ] Inicia sesión con `admin@pos.com` / `admin123`
-- [ ] Entra a **Punto de Venta**
-- [ ] Clic en **Escanear** → acepta el permiso de cámara
-- [ ] Agrega un producto y haz una venta de prueba
-- [ ] Verifica que el ticket se genere
-
----
-
-## 📱 Instalar en el celular
-
-1. Abre la URL de Vercel en **Chrome** (Android) o **Safari** (iPhone)
-2. Menú **⋮** o **Compartir**
-3. Selecciona **"Añadir a pantalla de inicio"**
-4. Ya tienes la app instalada como aplicación nativa
-
-> 📷 La cámara funciona porque Vercel provee HTTPS automáticamente.
-
----
-
-## 🔄 Actualizar el proyecto después
-
-Cada vez que cambies algo:
-
-```bash
-git add .
-git commit -m "Descripción del cambio"
-git push
-```
-
-Vercel **redespliega automáticamente** en ~2 minutos.
-
----
-
-## 🔧 Solución de problemas
-
-<details>
-<summary><b>❌ Error: "DATABASE_URL is not defined" en Vercel</b></summary>
-
-1. Ve a tu proyecto en Vercel
-2. **Settings** → **Environment Variables**
-3. Verifica que `DATABASE_URL` exista y tenga el valor correcto
-4. Ve a **Deployments** → menú `···` del último → **Redeploy**
-</details>
-
-<details>
-<summary><b>❌ El build falla en Vercel</b></summary>
-
-Prueba compilar localmente para ver el error real:
-
-```bash
 npm run build
 ```
 
-Corrige el error, luego:
-```bash
-git add .
-git commit -m "Fix build"
-git push
-```
-</details>
-
-<details>
-<summary><b>❌ La cámara no abre en el celular</b></summary>
-
-- Verifica que la URL empiece con **`https://`**
-- Revisa los permisos del navegador:
-  - **Chrome Android:** Ajustes → Configuración del sitio → Cámara
-  - **iPhone:** Ajustes → Safari → Cámara → Permitir
-- Prueba en modo incógnito
-</details>
-
-<details>
-<summary><b>❌ "remote origin already exists"</b></summary>
-
-```bash
-git remote remove origin
-git remote add origin https://github.com/TU_USUARIO/pos-abarrotes.git
-git push -u origin main
-```
-</details>
-
-<details>
-<summary><b>❌ Los datos desaparecen al cambiar de dispositivo</b></summary>
-
-Es el comportamiento actual: los datos se guardan en `localStorage` del navegador.
-
-Para sincronizar entre dispositivos hay que migrar la lógica a la base de datos PostgreSQL (el esquema ya está listo en `src/db/schema.ts`).
-</details>
-
----
-
-## 🔐 Seguridad para producción real
-
-Antes de usar el sistema con datos reales:
-
-1. **Cambia las contraseñas** en `/users` desde la aplicación
-2. **Repositorio privado** en GitHub
-3. **Nunca subas el `.env`** (ya está protegido)
-4. Si expones el token de GitHub por error, revócalo en [Settings → Tokens](https://github.com/settings/tokens)
-
----
-
-## 📊 Resumen de comandos
-
-```bash
-# Instalación inicial
-npm install
-
-# Crear tablas en la base de datos
-npm run db:push
-
-# Desarrollo local
-npm run dev
-
-# Compilar para producción
-npm run build
-
-# Ver la base de datos visualmente
-npm run db:studio
-
-# Subir cambios a producción
-git add .
-git commit -m "mensaje"
-git push
-```
+Atribución del catálogo y fotos: ODbL 1.0, DbCL 1.0 y CC BY-SA 3.0, respectivamente.

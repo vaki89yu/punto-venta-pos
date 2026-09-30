@@ -4,11 +4,9 @@ import { Pool } from "pg";
 /**
  * Conexión lazy a PostgreSQL.
  *
- * La app POS funciona sin base de datos (usa localStorage del navegador),
- * por lo que NO se lanza error si falta DATABASE_URL. Esto permite
- * desplegar en Vercel sin configurar base de datos.
- *
- * Cuando se define DATABASE_URL, la conexión se crea bajo demanda.
+ * Las rutas de API necesitan DATABASE_URL. No hay fallback a localStorage
+ * ni a una base ficticia; health y las operaciones informan cuando PostgreSQL
+ * no está configurado. El pool se crea bajo demanda al usar la base.
  */
 
 const globalForDb = globalThis as typeof globalThis & {
