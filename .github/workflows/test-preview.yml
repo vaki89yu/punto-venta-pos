@@ -1,0 +1,33 @@
+name: Prueba de rutas del deployment
+
+# Prueba las rutas clave del POS contra un URL de deployment de Vercel.
+# Los runners de GitHub sí tienen salida a *.vercel.app (el sandbox de desarrollo no).
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "URL base del deployment (sin / final, ej. https://mi-app.vercel.app)"
+        required: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probar rutas principales
+        run: |
+          BASE="${{ github.event.inputs.url }}"
+          echo "Probando $BASE"
+          fail=0
+          for p in / /login /pos /inventory /suppliers /settings /api/health; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$BASE$p")
+            echo "$p -> HTTP $code"
+            if [ "$code" != "200" ]; then fail=1; fi
+          done
+          echo "--- /api/health ---"
+          curl -sS --max-time 30 "$BASE/api/health"; echo
+          echo "--- /api/catalog/openfoodfacts ---"
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$BASE/api/catalog/openfoodfacts?page=1&pageSize=5")
+          echo "/api/catalog/openfoodfacts -> HTTP $code"
+          if [ "$code" != "200" ]; then fail=1; fi
+          exit $fail
