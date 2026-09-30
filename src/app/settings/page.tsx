@@ -11,31 +11,29 @@ import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { DatabaseTools } from "@/components/settings/DatabaseTools";
 import { StoreSettings } from "@/types";
-import { STORAGE_KEYS } from "@/data/seed";
 import { Store, Moon, Sun, Monitor, Save, Receipt, Percent, DollarSign } from "lucide-react";
 
 function SettingsContent() {
   const { showToast } = useToast();
   const { theme, setTheme } = useTheme();
-  const [settings, setSettings] = useState<StoreSettings>({
-    id: "settings-1",
-    name: "Mi Tienda",
-    taxRate: 16,
-    currency: "MXN",
-    minimumGrossMarginPercent: 10,
-    defaultCoverageDays: 14,
-    defaultLeadTimeDays: 7,
-    theme: "system",
-  });
+  const [settings, setSettings] = useState<StoreSettings>({ id: "", name: "", taxRate: 16, currency: "MXN", minimumGrossMarginPercent: 10, defaultCoverageDays: 14, defaultLeadTimeDays: 7, theme: "system" });
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    if (stored) {
-      setSettings((current) => ({ ...current, ...JSON.parse(stored) }));
-    }
-  }, []);
+    let active = true;
+    fetch("/api/settings", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json().catch(() => null) as { settings?: StoreSettings; error?: { message?: string } } | null;
+        if (!response.ok || !result?.settings) throw new Error(result?.error?.message || "No se pudo cargar la configuración de tienda.");
+        if (active) { setSettings(result.settings); setTheme(result.settings.theme); }
+      })
+      .catch((error: unknown) => { if (active) showToast(error instanceof Error ? error.message : "No se pudo cargar la configuración.", "error"); })
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
+  }, [setTheme, showToast]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const floor = Number(settings.minimumGrossMarginPercent ?? 10);
     const coverage = Number(settings.defaultCoverageDays ?? 14);
     const lead = Number(settings.defaultLeadTimeDays ?? 7);
@@ -51,10 +49,17 @@ function SettingsContent() {
       showToast("El tiempo de entrega debe ser de 0 a 90 días", "warning");
       return;
     }
-    const nextSettings = { ...settings, minimumGrossMarginPercent: floor, defaultCoverageDays: coverage, defaultLeadTimeDays: lead };
-    setSettings(nextSettings);
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
-    showToast("Configuración guardada", "success");
+    if (!settings.id) return showToast("No hay una configuración de tienda cargada desde PostgreSQL.", "error");
+    const nextSettings = { ...settings, theme, currency: "MXN" as const, minimumGrossMarginPercent: floor, defaultCoverageDays: coverage, defaultLeadTimeDays: lead };
+    setIsSaving(true);
+    try {
+      const response = await fetch("/api/settings", { method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nextSettings) });
+      const result = await response.json().catch(() => null) as { settings?: StoreSettings; error?: { message?: string } } | null;
+      if (!response.ok || !result?.settings) throw new Error(result?.error?.message || "No se pudo guardar la configuración.");
+      setSettings(result.settings);
+      showToast("Configuración guardada en PostgreSQL", "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo guardar la configuración.", "error"); }
+    finally { setIsSaving(false); }
   };
 
   return (

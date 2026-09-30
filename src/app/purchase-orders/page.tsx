@@ -10,19 +10,21 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
-import { usePurchaseOrders, PurchaseOrderItem } from "@/hooks/usePurchaseOrders";
+import { usePurchaseOrders, PurchaseOrder, PurchaseOrderItem } from "@/hooks/usePurchaseOrders";
 import { useProducts } from "@/hooks/useProducts";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Supplier } from "@/types";
 import { isFractionalUnit } from "@/lib/professionalFeatures";
-import { STORAGE_KEYS } from "@/data/seed";
 import { Plus, Truck, Package, CheckCircle, Clock, X, Trash2, Phone, Mail, MapPin, Building2, User } from "lucide-react";
 
 function PurchaseOrdersContent() {
   const { showToast } = useToast();
   const { orders, createOrder, updateOrderStatus, getTotalPending } = usePurchaseOrders();
-  const { products, updateProduct } = useProducts();
+  const { products } = useProducts();
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [receivingOrder, setReceivingOrder] = useState<PurchaseOrder | null>(null);
+  const [receiptLots, setReceiptLots] = useState<Record<string, { lotCode: string; expiresOn: string }>>({});
+  const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [orderItems, setOrderItems] = useState<PurchaseOrderItem[]>([]);
@@ -31,9 +33,16 @@ function PurchaseOrdersContent() {
   const [supplierSearch, setSupplierSearch] = useState("");
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEYS.SUPPLIERS);
-    if (stored) setSuppliers(JSON.parse(stored));
-  }, []);
+    let active = true;
+    fetch("/api/suppliers", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json().catch(() => null) as { suppliers?: Supplier[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudieron cargar los proveedores.");
+        if (active) setSuppliers((result?.suppliers || []).filter((supplier) => supplier.isActive));
+      })
+      .catch((error: unknown) => showToast(error instanceof Error ? error.message : "No se pudieron cargar los proveedores.", "error"));
+    return () => { active = false; };
+  }, [showToast]);
 
   const filteredSuppliers = suppliers.filter(s =>
     s.name.toLowerCase().includes(supplierSearch.toLowerCase()) ||
@@ -54,7 +63,11 @@ function PurchaseOrdersContent() {
       total: qty * product.purchasePrice,
     };
 
-    setOrderItems([...orderItems, newItem]);
+    setOrderItems((current) => {
+      const existing = current.find((item) => item.productId === newItem.productId);
+      if (!existing) return [...current, newItem];
+      return current.map((item) => item.productId === newItem.productId ? { ...item, quantity: item.quantity + qty, total: (item.quantity + qty) * item.unitCost } : item);
+    });
     setSelectedProductId("");
     setQuantity("1");
   };
@@ -65,34 +78,43 @@ function PurchaseOrdersContent() {
 
   const totalOrder = orderItems.reduce((sum, item) => sum + item.total, 0);
 
-  const handleCreateOrder = () => {
-    if (!selectedSupplier || orderItems.length === 0) {
-      showToast("Selecciona un proveedor y agrega productos", "warning");
-      return;
-    }
-
-    createOrder({
-      supplierId: selectedSupplier.id,
-      supplierName: selectedSupplier.name,
-      items: orderItems,
-      total: totalOrder,
-    });
-
-    showToast("Orden de compra creada exitosamente", "success");
-    setShowModal(false);
-    setOrderItems([]);
-    setSelectedSupplier(null);
+  const handleCreateOrder = async () => {
+    if (!selectedSupplier || orderItems.length === 0) return showToast("Selecciona un proveedor y agrega productos", "warning");
+    setIsSavingOrder(true);
+    try {
+      await createOrder({ supplierId: selectedSupplier.id, supplierName: selectedSupplier.name, items: orderItems, total: totalOrder });
+      showToast("Borrador de orden guardado en PostgreSQL; aún no se envía al proveedor", "success");
+      setShowModal(false);
+      setOrderItems([]);
+      setSelectedSupplier(null);
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo guardar la orden.", "error"); }
+    finally { setIsSavingOrder(false); }
   };
 
-  const handleReceiveOrder = (order: any) => {
-    order.items.forEach((item: PurchaseOrderItem) => {
-      const product = products.find(p => p.id === item.productId);
-      if (product) {
-        updateProduct(item.productId, { stock: product.stock + item.quantity });
-      }
-    });
-    updateOrderStatus(order.id, "received");
-    showToast("Mercancía recibida y stock actualizado", "success");
+  const markOrderSent = async (order: PurchaseOrder) => {
+    try { await updateOrderStatus(order.id, "ordered"); showToast("Orden marcada como enviada al proveedor", "success"); }
+    catch (error) { showToast(error instanceof Error ? error.message : "No se pudo actualizar la orden.", "error"); }
+  };
+
+  const beginReceiving = (order: PurchaseOrder) => {
+    setReceivingOrder(order);
+    setReceiptLots(Object.fromEntries(order.items.map((item, index) => [item.productId, { lotCode: `${order.orderNumber}-${index + 1}`, expiresOn: "" }])));
+  };
+
+  const handleReceiveOrder = async () => {
+    if (!receivingOrder) return;
+    if (receivingOrder.items.some((item) => !receiptLots[item.productId]?.lotCode.trim())) return showToast("Captura un identificador para cada lote recibido.", "warning");
+    try {
+      await updateOrderStatus(receivingOrder.id, "received", receivingOrder.items.map((item) => ({ productId: item.productId, lotCode: receiptLots[item.productId].lotCode.trim(), expiresOn: receiptLots[item.productId].expiresOn || null })));
+      showToast("Recepción, existencias, lotes y auditoría guardados en PostgreSQL", "success");
+      setReceivingOrder(null);
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo registrar la recepción.", "error"); }
+  };
+
+  const cancelOrder = async (order: PurchaseOrder) => {
+    if (!confirm(`¿Cancelar la orden ${order.orderNumber}?`)) return;
+    try { await updateOrderStatus(order.id, "cancelled"); showToast("Orden cancelada", "info"); }
+    catch (error) { showToast(error instanceof Error ? error.message : "No se pudo cancelar la orden.", "error"); }
   };
 
   const getStatusBadge = (status: string) => {
@@ -229,16 +251,8 @@ function PurchaseOrdersContent() {
                           </p>
                         ))}
                       </div>
-                      {order.status !== "received" && order.status !== "cancelled" && (
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="success" onClick={() => handleReceiveOrder(order)} leftIcon={<CheckCircle className="w-4 h-4" />}>
-                            Marcar como Recibida
-                          </Button>
-                          <Button size="sm" variant="danger" onClick={() => updateOrderStatus(order.id, "cancelled")}>
-                            Cancelar
-                          </Button>
-                        </div>
-                      )}
+                      {order.status === "pending" && <div className="flex gap-2"><Button size="sm" variant="primary" onClick={() => markOrderSent(order)} leftIcon={<Truck className="h-4 w-4" />}>Marcar enviada al proveedor</Button><Button size="sm" variant="danger" onClick={() => cancelOrder(order)}>Cancelar borrador</Button></div>}
+                      {order.status === "ordered" && <div className="flex gap-2"><Button size="sm" variant="success" onClick={() => beginReceiving(order)} leftIcon={<CheckCircle className="h-4 w-4" />}>Registrar recepción y lote</Button><Button size="sm" variant="danger" onClick={() => cancelOrder(order)}>Cancelar</Button></div>}
                     </div>
                   );
                 })}
@@ -344,10 +358,18 @@ function PurchaseOrdersContent() {
               <Button variant="secondary" fullWidth onClick={() => setShowModal(false)}>
                 Cancelar
               </Button>
-              <Button fullWidth onClick={handleCreateOrder} disabled={!selectedSupplier || orderItems.length === 0}>
-                Crear Orden
+              <Button fullWidth onClick={handleCreateOrder} disabled={!selectedSupplier || orderItems.length === 0 || isSavingOrder} isLoading={isSavingOrder}>
+                Guardar borrador en PostgreSQL
               </Button>
             </div>
+          </div>
+        </Modal>
+
+        <Modal isOpen={Boolean(receivingOrder)} onClose={() => setReceivingOrder(null)} title={`Registrar recepción${receivingOrder ? ` · ${receivingOrder.orderNumber}` : ""}`} size="lg">
+          <div className="space-y-4">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Confirma cantidades y asigna folio y vencimiento real de cada lote. La entrada al stock y la trazabilidad se guardan juntas; esta acción no se puede repetir.</div>
+            {receivingOrder?.items.map((item) => <div key={item.productId} className="rounded-xl border border-slate-200 p-4"><p className="mb-3 font-semibold text-slate-900">{item.productName} · {item.quantity} unidades · {formatCurrency(item.unitCost)} c/u</p><div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><Input label="Folio de lote *" value={receiptLots[item.productId]?.lotCode || ""} onChange={(event) => setReceiptLots((current) => ({ ...current, [item.productId]: { ...current[item.productId], lotCode: event.target.value } }))} required /><Input label="Vencimiento (si aplica)" type="date" value={receiptLots[item.productId]?.expiresOn || ""} onChange={(event) => setReceiptLots((current) => ({ ...current, [item.productId]: { ...current[item.productId], expiresOn: event.target.value } }))} /></div></div>)}
+            <div className="flex justify-end gap-3"><Button variant="secondary" onClick={() => setReceivingOrder(null)}>Cancelar</Button><Button onClick={handleReceiveOrder} leftIcon={<CheckCircle className="h-4 w-4" />}>Confirmar entrada real</Button></div>
           </div>
         </Modal>
       </div>

@@ -12,8 +12,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { Avatar } from "@/components/ui/Avatar";
 import { User, UserRole } from "@/types";
-import { STORAGE_KEYS } from "@/data/seed";
-import { generateId, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 import { Plus, Shield, Trash2, Edit2, CheckCircle, XCircle, Users as UsersIcon, Lock } from "lucide-react";
 
 const ROLE_INFO: Record<UserRole, { label: string; color: string; modules: string[] }> = {
@@ -46,16 +45,21 @@ function UsersContent() {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "cashier" as UserRole });
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEYS.USERS);
-    if (stored) setUsers(JSON.parse(stored));
-  }, []);
-
-  const saveUsers = (data: User[]) => {
-    setUsers(data);
-    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(data));
-  };
+    let active = true;
+    fetch("/api/users", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json().catch(() => null) as { users?: User[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudo cargar el personal.");
+        if (active) setUsers(result?.users || []);
+      })
+      .catch((error: unknown) => { if (active) showToast(error instanceof Error ? error.message : "No se pudo cargar el personal.", "error"); })
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
+  }, [showToast]);
 
   const openCreate = () => {
     setEditing(null);
@@ -65,56 +69,55 @@ function UsersContent() {
 
   const openEdit = (u: User) => {
     setEditing(u);
-    setForm({ name: u.name, email: u.email, password: u.password, role: u.role });
+    setForm({ name: u.name, email: u.email, password: "", role: u.role });
     setShowModal(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.name || !form.email || !form.password) {
-      showToast("Completa todos los campos", "warning");
+    if (!form.name.trim() || !form.email.trim() || (!editing && form.password.length < 12) || (form.password && form.password.length < 12)) {
+      showToast(editing ? "La contraseña nueva debe tener al menos 12 caracteres." : "Completa los campos y usa una contraseña de al menos 12 caracteres.", "warning");
       return;
     }
-
-    if (editing) {
-      saveUsers(users.map(u => u.id === editing.id ? { ...u, ...form, updatedAt: new Date() } : u));
-      showToast("Usuario actualizado", "success");
-    } else {
-      if (users.some(u => u.email === form.email)) {
-        showToast("Ya existe un usuario con ese correo", "error");
-        return;
-      }
-      const newUser: User = {
-        id: generateId(),
-        ...form,
-        isActive: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      saveUsers([...users, newUser]);
-      showToast("Usuario creado exitosamente", "success");
-    }
-    setShowModal(false);
+    setIsSaving(true);
+    try {
+      const response = await fetch(editing ? `/api/users/${editing.id}` : "/api/users", {
+        method: editing ? "PATCH" : "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, ...(editing && !form.password ? { password: undefined } : {}) }),
+      });
+      const result = await response.json().catch(() => null) as { user?: User; error?: { message?: string } } | null;
+      if (!response.ok || !result?.user) throw new Error(result?.error?.message || "No se pudo guardar el usuario.");
+      setUsers((current) => editing ? current.map((u) => u.id === editing.id ? result.user! : u) : [result.user!, ...current]);
+      showToast(editing ? "Usuario actualizado" : "Usuario creado", "success");
+      setShowModal(false);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "No se pudo guardar el usuario.", "error");
+    } finally { setIsSaving(false); }
   };
 
-  const toggleActive = (id: string) => {
-    if (id === currentUser?.id) {
-      showToast("No puedes desactivar tu propio usuario", "warning");
-      return;
-    }
-    saveUsers(users.map(u => u.id === id ? { ...u, isActive: !u.isActive } : u));
-    showToast("Estado actualizado", "info");
+  const toggleActive = async (target: User) => {
+    if (target.id === currentUser?.id) return showToast("No puedes desactivar tu propio usuario", "warning");
+    try {
+      const response = await fetch(`/api/users/${target.id}`, { method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive: !target.isActive }) });
+      const result = await response.json().catch(() => null) as { user?: User; error?: { message?: string } } | null;
+      if (!response.ok || !result?.user) throw new Error(result?.error?.message || "No se pudo cambiar el estado.");
+      setUsers((current) => current.map((u) => u.id === target.id ? result.user! : u));
+      showToast("Estado actualizado", "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo cambiar el estado.", "error"); }
   };
 
-  const handleDelete = (id: string) => {
-    if (id === currentUser?.id) {
-      showToast("No puedes eliminar tu propio usuario", "warning");
-      return;
-    }
-    if (confirm("¿Eliminar este usuario?")) {
-      saveUsers(users.filter(u => u.id !== id));
-      showToast("Usuario eliminado", "info");
-    }
+  const handleDelete = async (id: string) => {
+    if (id === currentUser?.id) return showToast("No puedes desactivar tu propio usuario", "warning");
+    if (!confirm("¿Desactivar este usuario? Se conserva su historial de operaciones.")) return;
+    try {
+      const response = await fetch(`/api/users/${id}`, { method: "DELETE", credentials: "same-origin" });
+      const result = await response.json().catch(() => null) as { user?: User; error?: { message?: string } } | null;
+      if (!response.ok || !result?.user) throw new Error(result?.error?.message || "No se pudo desactivar el usuario.");
+      setUsers((current) => current.map((u) => u.id === id ? result.user! : u));
+      showToast("Usuario desactivado", "info");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo desactivar el usuario.", "error"); }
   };
 
   return (
@@ -185,7 +188,7 @@ function UsersContent() {
                       {u.isActive ? "Activo" : "Inactivo"}
                     </Badge>
                     <div className="flex gap-1">
-                      <button onClick={() => toggleActive(u.id)} className="p-2 text-slate-500 hover:bg-slate-200 rounded-lg" title="Activar/Desactivar">
+                      <button onClick={() => toggleActive(u)} className="p-2 text-slate-500 hover:bg-slate-200 rounded-lg" title="Activar/Desactivar">
                         {u.isActive ? <XCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
                       </button>
                       <button onClick={() => openEdit(u)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg">
@@ -218,12 +221,14 @@ function UsersContent() {
               required
             />
             <Input
-              label="Contraseña *"
-              type="text"
+              label={editing ? "Nueva contraseña (opcional)" : "Contraseña inicial *"}
+              type="password"
+              autoComplete="new-password"
+              placeholder="Mínimo 12 caracteres"
               value={form.password}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
               leftIcon={<Lock className="w-4 h-4" />}
-              required
+              required={!editing}
             />
             <div>
               <label className="block text-sm font-medium text-slate-600 mb-1.5">Rol</label>
@@ -247,7 +252,7 @@ function UsersContent() {
               <Button type="button" variant="secondary" fullWidth onClick={() => setShowModal(false)}>
                 Cancelar
               </Button>
-              <Button type="submit" fullWidth>
+              <Button type="submit" fullWidth isLoading={isSaving}>
                 {editing ? "Guardar cambios" : "Crear usuario"}
               </Button>
             </div>

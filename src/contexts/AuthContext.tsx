@@ -1,73 +1,91 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useState, ReactNode } from "react";
 import { User } from "@/types";
-import { STORAGE_KEYS, initializeDemoData } from "@/data/seed";
 
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
+  error: string | null;
   login: (email: string, password: string) => Promise<boolean>;
-  logout: () => void;
+  logout: () => Promise<void>;
   hasPermission: (module: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+type ApiErrorPayload = { error?: { message?: string } };
+async function getError(response: Response) {
+  const payload = await response.json().catch(() => null) as ApiErrorPayload | null;
+  return payload?.error?.message || `Error del servidor (${response.status}).`;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    initializeDemoData();
-    const storedUser = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-    }
-    setIsLoading(false);
+    let active = true;
+    fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await getError(response));
+        return response.json() as Promise<{ user: User | null }>;
+      })
+      .then((result) => { if (active) { setUser(result.user); setError(null); } })
+      .catch((cause: unknown) => {
+        if (active) {
+          setUser(null);
+          setError(cause instanceof Error ? cause.message : "No se pudo validar la sesión.");
+        }
+      })
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
   }, []);
 
-  const login = async (email: string, password: string): Promise<boolean> => {
-    const users = JSON.parse(localStorage.getItem(STORAGE_KEYS.USERS) || "[]");
-    const foundUser = users.find((u: User) => u.email === email && u.password === password);
-    
-    if (foundUser && foundUser.isActive) {
-      setUser(foundUser);
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(foundUser));
+  const login = async (email: string, password: string) => {
+    setError(null);
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!response.ok) throw new Error(await getError(response));
+      const result = await response.json() as { user: User };
+      setUser(result.user);
+      setIsLoading(false);
       return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo iniciar sesión.");
+      return false;
     }
-    return false;
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+  const logout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+    } finally {
+      setUser(null);
+    }
   };
 
-  const hasPermission = (module: string): boolean => {
-    if (!user) return false;
-    
-    const permissions: Record<string, string[]> = {
-      admin: ["dashboard", "pos", "inventory", "sales", "customers", "suppliers", "reports", "cash", "settings", "users", "operations"],
-      manager: ["dashboard", "pos", "inventory", "sales", "customers", "suppliers", "reports", "cash", "operations"],
+  const hasPermission = useMemo(() => {
+    const permissions: Record<User["role"], string[]> = {
+      admin: ["dashboard", "pos", "inventory", "products", "sales", "customers", "suppliers", "reports", "cash", "settings", "users", "operations"],
+      manager: ["dashboard", "pos", "inventory", "products", "sales", "customers", "suppliers", "reports", "cash", "operations"],
       cashier: ["pos", "cash", "customers", "sales"],
-      inventory: ["inventory", "suppliers", "products", "operations"],
+      inventory: ["inventory", "products", "suppliers", "operations"],
     };
-    
-    return permissions[user.role]?.includes(module) || false;
-  };
+    return (module: string) => Boolean(user && permissions[user.role]?.includes(module));
+  }, [user]);
 
-  return (
-    <AuthContext.Provider value={{ user, isLoading, login, logout, hasPermission }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={{ user, isLoading, error, login, logout, hasPermission }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
+  if (context === undefined) throw new Error("useAuth must be used within an AuthProvider");
   return context;
 }

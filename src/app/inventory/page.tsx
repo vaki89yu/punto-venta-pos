@@ -15,9 +15,8 @@ import { OpenFoodFactsCatalogPanel } from "@/components/inventory/OpenFoodFactsC
 import { useProducts } from "@/hooks/useProducts";
 import { Product, Category } from "@/types";
 import { useAuth } from "@/contexts/AuthContext";
-import { formatQuantity, getGrossMarginPercent, isFractionalUnit, recordAuditEvent } from "@/lib/professionalFeatures";
+import { formatQuantity, getGrossMarginPercent, isFractionalUnit } from "@/lib/professionalFeatures";
 import { formatCurrency, generateSKU, generateBarcode } from "@/lib/utils";
-import { STORAGE_KEYS } from "@/data/seed";
 import {
   Plus,
   Search,
@@ -46,16 +45,20 @@ function InventoryContent() {
   const [adjustProduct, setAdjustProduct] = useState<Product | null>(null);
 
   React.useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
-    if (stored) setCategories(JSON.parse(stored));
-    try {
-      const settings = JSON.parse(localStorage.getItem(STORAGE_KEYS.SETTINGS) || "{}");
-      const floor = Number(settings.minimumGrossMarginPercent);
-      if (Number.isFinite(floor)) setMinimumMargin(Math.max(0, Math.min(90, floor)));
-    } catch {
-      // Keep the default margin policy.
-    }
-  }, []);
+    let active = true;
+    Promise.all([
+      fetch("/api/categories", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
+        const result = await response.json().catch(() => null) as { categories?: Category[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudieron cargar las categorías.");
+        if (active) setCategories(result?.categories || []);
+      }),
+      fetch("/api/settings", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
+        const result = await response.json().catch(() => null) as { settings?: { minimumGrossMarginPercent?: number }; error?: { message?: string } } | null;
+        if (response.ok && active) setMinimumMargin(Math.max(0, Math.min(90, Number(result?.settings?.minimumGrossMarginPercent ?? 10))));
+      }),
+    ]).catch((error: unknown) => showToast(error instanceof Error ? error.message : "No se pudo conectar con PostgreSQL.", "error"));
+    return () => { active = false; };
+  }, [showToast]);
 
   const filteredProducts = products.filter((p) => {
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -67,74 +70,67 @@ function InventoryContent() {
     return matchesSearch;
   });
 
-  const handleAddProduct = (formData: any) => {
+  const handleAddProduct = async (formData: any) => {
     const margin = getGrossMarginPercent(Number(formData.purchasePrice), Number(formData.salePrice));
+    let marginOverrideReason: string | undefined;
     if (margin < minimumMargin) {
-      if (user?.role !== "admin" && user?.role !== "manager") {
-        showToast(`No se puede guardar: el margen bruto es ${margin.toFixed(1)}% y el mínimo configurado es ${minimumMargin}%`, "error");
-        return;
-      }
-      const reason = window.prompt(`El margen bruto es ${margin.toFixed(1)}%, por debajo del mínimo de ${minimumMargin}%. Escribe el motivo para autorizar esta excepción:`)?.trim();
-      if (!reason) {
-        showToast("Se canceló el registro: la excepción requiere un motivo", "warning");
-        return;
-      }
-      recordAuditEvent({
-        action: "margin.guard.override",
-        entityType: "product",
-        summary: `Excepción de margen autorizada para ${formData.name}.`,
-        metadata: { marginPercent: Number(margin.toFixed(2)), minimumMarginPercent: minimumMargin, reason },
-      });
+      if (user?.role !== "admin" && user?.role !== "manager") return showToast(`Margen ${margin.toFixed(1)}% menor al mínimo de ${minimumMargin}%; solicita autorización de gerencia.`, "error");
+      marginOverrideReason = window.prompt(`Margen ${margin.toFixed(1)}%. Escribe el motivo para autorizar esta excepción:`)?.trim();
+      if (!marginOverrideReason) return showToast("Se canceló: la excepción de margen requiere un motivo.", "warning");
     }
-    addProduct({
-      ...formData,
-      sku: formData.sku || generateSKU(),
-      barcode: formData.barcode || generateBarcode(),
-      stock: Number(formData.stock),
-      minStock: Number(formData.minStock),
-      tax: 16,
-      isActive: true,
-    });
-    setShowAddModal(false);
-    showToast("Producto agregado exitosamente", "success");
+    try {
+      await addProduct({
+        ...formData,
+        sku: formData.sku || generateSKU(),
+        barcode: formData.barcode || generateBarcode(),
+        stock: Number(formData.stock),
+        minStock: Number(formData.minStock),
+        tax: 16,
+        isActive: true,
+        ...(marginOverrideReason ? { marginOverrideReason } : {}),
+      });
+      setShowAddModal(false);
+      showToast("Producto guardado en PostgreSQL", "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo guardar el producto.", "error"); }
   };
 
-  const handleUpdateProduct = (formData: any) => {
+  const handleUpdateProduct = async (formData: any) => {
     if (!editingProduct) return;
     const margin = getGrossMarginPercent(Number(formData.purchasePrice), Number(formData.salePrice));
+    let marginOverrideReason: string | undefined;
     if (margin < minimumMargin) {
-      if (user?.role !== "admin" && user?.role !== "manager") {
-        showToast(`No se puede guardar: el margen bruto es ${margin.toFixed(1)}% y el mínimo es ${minimumMargin}%`, "error");
-        return;
-      }
-      const reason = window.prompt(`El margen bruto es ${margin.toFixed(1)}%, debajo del mínimo de ${minimumMargin}%. Escribe el motivo de la excepción:`)?.trim();
-      if (!reason) {
-        showToast("Se canceló el cambio de precio: la excepción requiere un motivo", "warning");
-        return;
-      }
-      recordAuditEvent({ action: "margin.guard.override", entityType: "product", entityId: editingProduct.id, summary: `Excepción de margen autorizada al editar ${formData.name}.`, metadata: { marginPercent: Number(margin.toFixed(2)), minimumMarginPercent: minimumMargin, reason } });
+      if (user?.role !== "admin" && user?.role !== "manager") return showToast(`Margen ${margin.toFixed(1)}% menor al mínimo de ${minimumMargin}%; solicita autorización de gerencia.`, "error");
+      marginOverrideReason = window.prompt(`Margen ${margin.toFixed(1)}%. Escribe el motivo para autorizar esta excepción:`)?.trim();
+      if (!marginOverrideReason) return showToast("Se canceló: la excepción de margen requiere un motivo.", "warning");
     }
-    updateProduct(editingProduct.id, {
-      name: formData.name,
-      sku: formData.sku,
-      barcode: formData.barcode,
-      categoryId: formData.categoryId,
-      description: formData.description,
-      unit: formData.unit,
-      purchasePrice: Number(formData.purchasePrice),
-      salePrice: Number(formData.salePrice),
-      stock: Number(formData.stock),
-      minStock: Number(formData.minStock),
-    });
-    setEditingProduct(null);
-    showToast("Producto actualizado", "success");
+    const nextStock = Number(formData.stock);
+    let stockReason: string | undefined;
+    if (Math.abs(nextStock - editingProduct.stock) > 0.0001) {
+      stockReason = window.prompt("Describe el motivo del ajuste de existencias:")?.trim();
+      if (!stockReason) return showToast("El ajuste de existencias requiere un motivo.", "warning");
+    }
+    try {
+      await updateProduct(editingProduct.id, {
+        name: formData.name,
+        sku: formData.sku,
+        barcode: formData.barcode,
+        categoryId: formData.categoryId,
+        description: formData.description,
+        unit: formData.unit,
+        purchasePrice: Number(formData.purchasePrice),
+        salePrice: Number(formData.salePrice),
+        minStock: Number(formData.minStock),
+        ...(stockReason ? { stock: nextStock } : {}),
+      }, stockReason, marginOverrideReason);
+      setEditingProduct(null);
+      showToast("Producto actualizado en PostgreSQL", "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo actualizar el producto.", "error"); }
   };
 
-  const handleDelete = (id: string) => {
-    if (confirm("¿Estás seguro de eliminar este producto?")) {
-      deleteProduct(id);
-      showToast("Producto eliminado", "info");
-    }
+  const handleDelete = async (id: string) => {
+    if (!confirm("¿Retirar este producto del catálogo? Se conserva el historial de ventas.")) return;
+    try { await deleteProduct(id); showToast("Producto retirado del catálogo", "info"); }
+    catch (error) { showToast(error instanceof Error ? error.message : "No se pudo retirar el producto.", "error"); }
   };
 
   return (
@@ -307,9 +303,12 @@ function InventoryContent() {
           product={adjustProduct}
           isOpen={!!adjustProduct}
           onClose={() => setAdjustProduct(null)}
-          onAdjust={(productId, newStock, reason) => {
-            updateProduct(productId, { stock: newStock });
-            showToast(`Stock actualizado a ${newStock} unidades`, "success");
+          onAdjust={async (productId, newStock, reason) => {
+            try {
+              await updateProduct(productId, { stock: newStock }, reason);
+              showToast(`Existencia actualizada a ${newStock}; movimiento guardado en la bitácora`, "success");
+              setAdjustProduct(null);
+            } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo actualizar la existencia.", "error"); }
           }}
         />
       </div>
@@ -317,7 +316,8 @@ function InventoryContent() {
   );
 }
 
-function ProductForm({ categories, minimumMargin, initialProduct, onSubmit, onCancel }: { categories: Category[]; minimumMargin: number; initialProduct?: Product; onSubmit: (data: any) => void; onCancel: () => void }) {
+function ProductForm({ categories, minimumMargin, initialProduct, onSubmit, onCancel }: { categories: Category[]; minimumMargin: number; initialProduct?: Product; onSubmit: (data: any) => void | Promise<void>; onCancel: () => void }) {
+  const [isSaving, setIsSaving] = useState(false);
   const [formData, setFormData] = useState(() => ({
     name: initialProduct?.name || "",
     sku: initialProduct?.sku || generateSKU(),
@@ -337,15 +337,18 @@ function ProductForm({ categories, minimumMargin, initialProduct, onSubmit, onCa
     ? getGrossMarginPercent(parsedCost, parsedPrice)
     : null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({
-      ...formData,
-      purchasePrice: parseFloat(formData.purchasePrice),
-      salePrice: parseFloat(formData.salePrice),
-      stock: Number(formData.stock),
-      minStock: Number(formData.minStock),
-    });
+    setIsSaving(true);
+    try {
+      await onSubmit({
+        ...formData,
+        purchasePrice: parseFloat(formData.purchasePrice),
+        salePrice: parseFloat(formData.salePrice),
+        stock: Number(formData.stock),
+        minStock: Number(formData.minStock),
+      });
+    } finally { setIsSaving(false); }
   };
 
   return (
@@ -443,7 +446,7 @@ function ProductForm({ categories, minimumMargin, initialProduct, onSubmit, onCa
         <Button type="button" variant="secondary" onClick={onCancel}>
           Cancelar
         </Button>
-        <Button type="submit">
+        <Button type="submit" disabled={isSaving} isLoading={isSaving}>
           Guardar producto
         </Button>
       </div>

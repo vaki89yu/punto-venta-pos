@@ -12,7 +12,6 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { Supplier } from "@/types";
 import { formatCurrency } from "@/lib/utils";
-import { STORAGE_KEYS } from "@/data/seed";
 import { Search, Plus, Truck, Phone, Mail, MapPin, Package } from "lucide-react";
 
 function SuppliersContent() {
@@ -22,9 +21,16 @@ function SuppliersContent() {
   const [showAddModal, setShowAddModal] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEYS.SUPPLIERS);
-    if (stored) setSuppliers(JSON.parse(stored));
-  }, []);
+    let active = true;
+    fetch("/api/suppliers", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json().catch(() => null) as { suppliers?: Supplier[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudieron cargar los proveedores.");
+        if (active) setSuppliers(result?.suppliers || []);
+      })
+      .catch((error: unknown) => showToast(error instanceof Error ? error.message : "No se pudo cargar la información.", "error"));
+    return () => { active = false; };
+  }, [showToast]);
 
   const filteredSuppliers = suppliers.filter((s) =>
     s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -32,19 +38,15 @@ function SuppliersContent() {
     s.phone?.includes(searchQuery)
   );
 
-  const handleAddSupplier = (formData: any) => {
-    const newSupplier: Supplier = {
-      ...formData,
-      id: Math.random().toString(36).substring(2, 9),
-      balance: 0,
-      isActive: true,
-      createdAt: new Date(),
-    };
-    const updated = [...suppliers, newSupplier];
-    setSuppliers(updated);
-    localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(updated));
-    setShowAddModal(false);
-    showToast("Proveedor agregado exitosamente", "success");
+  const handleAddSupplier = async (formData: any) => {
+    try {
+      const response = await fetch("/api/suppliers", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(formData) });
+      const result = await response.json().catch(() => null) as { supplier?: Supplier; error?: { message?: string } } | null;
+      if (!response.ok || !result?.supplier) throw new Error(result?.error?.message || "No se pudo registrar el proveedor.");
+      setSuppliers((current) => [result.supplier!, ...current]);
+      setShowAddModal(false);
+      showToast("Proveedor guardado en PostgreSQL", "success");
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo registrar el proveedor.", "error"); }
   };
 
   return (

@@ -2,10 +2,12 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  password: string;
+  /** Passwords are never returned to the browser; user creation sends one-time input separately. */
+  password?: never;
   role: "admin" | "manager" | "cashier" | "inventory";
   avatar?: string;
   isActive: boolean;
+  lastLoginAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }

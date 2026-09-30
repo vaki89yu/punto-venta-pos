@@ -36,15 +36,15 @@ function SalesContent() {
     return matchesSearch;
   });
 
-  const handleCancel = (id: string) => {
+  const handleCancel = async (id: string) => {
     if (user?.role !== "admin" && user?.role !== "manager") {
       showToast("La cancelación de ventas requiere autorización de gerente.", "error");
       return;
     }
     if (confirm("¿Estás seguro de cancelar esta venta? El stock se restituirá y la acción quedará en auditoría.")) {
       try {
-        const cancelled = cancelSale(id);
-        if (cancelled) showToast("Venta cancelada; inventario restituido", "info");
+        await cancelSale(id);
+        showToast("Venta cancelada; inventario restituido", "info");
       } catch (error) {
         showToast(error instanceof Error ? error.message : "No se pudo cancelar la venta", "error");
       }

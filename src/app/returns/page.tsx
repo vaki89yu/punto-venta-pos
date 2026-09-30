@@ -12,23 +12,25 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { useSales } from "@/hooks/useSales";
 import { useProducts } from "@/hooks/useProducts";
-import { useReturns } from "@/hooks/useReturns";
+import { RefundMethod, useReturns } from "@/hooks/useReturns";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
 import { Sale } from "@/types";
-import { isFractionalUnit, restoreLotsFromSale } from "@/lib/professionalFeatures";
+import { isFractionalUnit } from "@/lib/professionalFeatures";
 import { Search, RotateCcw, CheckCircle, Receipt } from "lucide-react";
 
 function ReturnsContent() {
   const { showToast } = useToast();
   const { user } = useAuth();
   const { sales } = useSales();
-  const { updateProduct, getProductById } = useProducts();
-  const { returns, createReturn, getTotalRefunded } = useReturns();
+  const { getProductById } = useProducts();
+  const { returns, createReturn, getTotalRefunded, isLoading: isLoadingReturns, error: returnsError } = useReturns();
 
   const [searchTicket, setSearchTicket] = useState("");
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [returnQuantities, setReturnQuantities] = useState<Record<string, number>>({});
   const [reason, setReason] = useState("");
+  const [refundMethod, setRefundMethod] = useState<RefundMethod>("cash");
+  const [isSaving, setIsSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
   const searchResults = sales.filter(
@@ -47,6 +49,8 @@ function ReturnsContent() {
     const initial: Record<string, number> = {};
     sale.items.forEach(item => { initial[item.id] = 0; });
     setReturnQuantities(initial);
+    setReason("");
+    setRefundMethod("cash");
     setShowModal(true);
   };
 
@@ -65,66 +69,22 @@ function ReturnsContent() {
     }, 0);
   };
 
-  const handleConfirmReturn = () => {
+  const handleConfirmReturn = async () => {
     if (!selectedSale || !user) return;
-    if (user.role !== "admin" && user.role !== "manager") {
-      showToast("La aprobación de devoluciones requiere a un gerente o administrador.", "error");
-      return;
-    }
-    if (!reason.trim()) {
-      showToast("Ingresa el motivo de la devolución", "warning");
-      return;
-    }
-
-    const itemsToReturn = selectedSale.items
-      .filter((item) => (returnQuantities[item.id] || 0) > 0)
-      .map((item) => {
-        const previousReturns = returns
-          .filter((record) => record.saleId === selectedSale.id && record.status === "approved")
-          .flatMap((record) => record.items)
-          .filter((returnedItem) => returnedItem.saleItemId === item.id || (!returnedItem.saleItemId && returnedItem.productId === item.productId));
-        const previousLotReturns = previousReturns.flatMap((returnedItem) => returnedItem.lotAllocations || []);
-        const remainingAllowed = Math.max(0, item.quantity - previousReturns.reduce((sum, returnedItem) => sum + returnedItem.quantityReturned, 0));
-        const quantityReturned = Math.min(returnQuantities[item.id] || 0, remainingAllowed);
-        const refundPerUnit = item.quantity > 0 ? item.total / item.quantity : 0;
-        const lotAllocations = restoreLotsFromSale(item.lotAllocations || [], quantityReturned, previousLotReturns);
-        const product = getProductById(item.productId);
-        return {
-          saleItemId: item.id,
-          productId: item.productId,
-          productName: product?.name || "Producto",
-          quantityReturned,
-          price: item.price,
-          refundAmount: Math.round(quantityReturned * refundPerUnit * 100) / 100,
-          lotAllocations,
-        };
-      })
-      .filter((item) => item.quantityReturned > 0);
-
-    if (itemsToReturn.length === 0) {
-      showToast("No quedan cantidades elegibles para devolver en este ticket", "warning");
-      return;
-    }
-
-    // Restablece las existencias y, cuando la venta tenía trazabilidad, devuelve cada fracción a su lote original.
-    itemsToReturn.forEach((item) => {
-      const product = getProductById(item.productId);
-      if (product) updateProduct(item.productId, { stock: product.stock + item.quantityReturned });
-    });
-
-    createReturn({
-      saleId: selectedSale.id,
-      ticketNumber: selectedSale.ticketNumber,
-      items: itemsToReturn,
-      totalRefund: Math.round(calculateRefund() * 100) / 100,
-      reason: reason.trim(),
-      processedBy: user.id,
-    });
-
-    showToast("Devolución procesada exitosamente", "success");
-    setShowModal(false);
-    setSelectedSale(null);
-    setReason("");
+    if (user.role !== "admin" && user.role !== "manager") return showToast("La aprobación de devoluciones requiere a un gerente o administrador.", "error");
+    if (!reason.trim()) return showToast("Ingresa el motivo de la devolución", "warning");
+    const items = selectedSale.items.map((item) => ({ saleItemId: item.id, quantityReturned: returnQuantities[item.id] || 0 })).filter((item) => item.quantityReturned > 0);
+    if (!items.length) return showToast("Selecciona al menos una cantidad para devolver.", "warning");
+    setIsSaving(true);
+    try {
+      await createReturn({ saleId: selectedSale.id, reason: reason.trim(), refundMethod, items });
+      showToast("Devolución, reembolso registrado, stock, lotes y auditoría guardados en PostgreSQL", "success");
+      setShowModal(false);
+      setSelectedSale(null);
+      setReason("");
+      setReturnQuantities({});
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo procesar la devolución.", "error"); }
+    finally { setIsSaving(false); }
   };
 
   return (
@@ -199,7 +159,9 @@ function ReturnsContent() {
         <Card>
           <CardHeader title="Historial de Devoluciones" />
           <CardContent>
-            {returns.length === 0 ? (
+            {returnsError && <p className="mb-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{returnsError}</p>}
+            {isLoadingReturns && returns.length === 0 && <p className="py-4 text-center text-slate-500">Cargando devoluciones del servidor…</p>}
+            {returns.length === 0 && !isLoadingReturns ? (
               <div className="text-center py-8">
                 <RotateCcw className="w-12 h-12 text-slate-300 mx-auto mb-2" />
                 <p className="text-slate-400">No hay devoluciones registradas</p>
@@ -280,6 +242,14 @@ function ReturnsContent() {
                 onChange={(e) => setReason(e.target.value)}
               />
 
+              <label className="block text-sm font-medium text-slate-700">Método de reembolso
+                <select value={refundMethod} onChange={(event) => setRefundMethod(event.target.value as RefundMethod)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-slate-900">
+                  <option value="cash">Efectivo (registrar salida de caja)</option>
+                  <option value="card">Tarjeta (reembolso manual en terminal)</option>
+                  <option value="transfer">Transferencia (reembolso manual)</option>
+                </select>
+              </label>
+              {refundMethod !== "cash" && <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">El POS solo registra el reembolso. Debes procesarlo por separado en tu terminal o banco; no está conectado a un procesador de pagos.</p>}
               <div className="p-4 bg-rose-50 rounded-xl border border-rose-200">
                 <div className="flex justify-between items-center">
                   <span className="font-medium text-rose-700">Total a Reembolsar</span>
@@ -291,8 +261,8 @@ function ReturnsContent() {
                 <Button variant="secondary" fullWidth onClick={() => setShowModal(false)}>
                   Cancelar
                 </Button>
-                <Button variant="danger" fullWidth onClick={handleConfirmReturn} disabled={user?.role !== "admin" && user?.role !== "manager"} leftIcon={<CheckCircle className="w-4 h-4" />}>
-                  Confirmar Devolución
+                <Button variant="danger" fullWidth onClick={handleConfirmReturn} disabled={isSaving || calculateRefund() <= 0 || (user?.role !== "admin" && user?.role !== "manager")} isLoading={isSaving} leftIcon={<CheckCircle className="w-4 h-4" />}>
+                  Confirmar reembolso y devolución
                 </Button>
               </div>
             </div>

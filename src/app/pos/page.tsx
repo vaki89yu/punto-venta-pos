@@ -23,7 +23,6 @@ import { createUsbInputReader } from "@/lib/usbInputReader";
 import { useSales } from "@/hooks/useSales";
 import { useAuth } from "@/contexts/AuthContext";
 import { Product, Customer, Category, PaymentMethod } from "@/types";
-import { STORAGE_KEYS } from "@/data/seed";
 import { formatCurrency } from "@/lib/utils";
 import {
   Scan,
@@ -39,7 +38,7 @@ import {
 function POSContent() {
   const { showToast } = useToast();
   const { user } = useAuth();
-  const { products, getProductByBarcode, searchProducts, addProduct } = useProducts();
+  const { products, getProductByBarcode, searchProducts, addProduct, updateProduct } = useProducts();
   const { createSale } = useSales();
   const { items, addItem, clearCart, subtotal, discount, tax, total, itemCount } = useCart();
 
@@ -91,11 +90,21 @@ function POSContent() {
   };
 
   useEffect(() => {
-    const storedCategories = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
-    const storedCustomers = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
-    if (storedCategories) setCategories(JSON.parse(storedCategories));
-    if (storedCustomers) setCustomers(JSON.parse(storedCustomers));
-  }, []);
+    let active = true;
+    Promise.all([
+      fetch("/api/categories", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
+        const result = await response.json().catch(() => null) as { categories?: Category[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudieron cargar las categorías.");
+        if (active) setCategories(result?.categories || []);
+      }),
+      fetch("/api/customers", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
+        const result = await response.json().catch(() => null) as { customers?: Customer[]; error?: { message?: string } } | null;
+        if (!response.ok) throw new Error(result?.error?.message || "No se pudieron cargar los clientes.");
+        if (active) setCustomers(result?.customers || []);
+      }),
+    ]).catch((error: unknown) => showToast(error instanceof Error ? error.message : "No se pudieron cargar datos del punto de venta.", "error"));
+    return () => { active = false; };
+  }, [showToast]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -231,20 +240,27 @@ function POSContent() {
     }
   };
 
-  const handleSaveNewProduct = (
+  const handleSaveNewProduct = async (
     productData: Omit<Product, "id" | "createdAt" | "updatedAt">,
     addToCart: boolean
   ) => {
-    const created = addProduct(productData);
-    setNewBarcode(null);
-    if (addToCart) {
-      addProductToCart(created);
-      if (!isFractionalUnit(created.unit)) setScannedCount((c) => c + 1);
-      showToast(isFractionalUnit(created.unit)
-        ? `"${created.name}" registrado; captura el peso para venderlo`
-        : `"${created.name}" registrado y agregado al carrito`, "success");
-    } else {
-      showToast(`"${created.name}" registrado en inventario`, "success");
+    try {
+      const existingProduct = getProductByBarcode(productData.barcode);
+      const created = existingProduct
+        ? await updateProduct(existingProduct.id, { stock: existingProduct.stock + Number(productData.stock) }, "Entrada de inventario rápida desde escáner; conserva el precio registrado.")
+        : await addProduct(productData);
+      setNewBarcode(null);
+      if (addToCart) {
+        addProductToCart(created);
+        if (!isFractionalUnit(created.unit)) setScannedCount((count) => count + 1);
+        showToast(isFractionalUnit(created.unit)
+          ? `"${created.name}" guardado; captura el peso para venderlo`
+          : `"${created.name}" guardado en PostgreSQL y agregado al carrito`, "success");
+      } else {
+        showToast(existingProduct ? `Existencia de ${created.name} actualizada en PostgreSQL` : `"${created.name}" guardado en PostgreSQL`, "success");
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "No se pudo guardar el producto.", "error");
     }
   };
 
@@ -257,34 +273,29 @@ function POSContent() {
     }
   };
 
-  const handleCheckout = (paymentData: {
-    method: PaymentMethod;
+  const handleCheckout = async (paymentData: {
+    method: Exclude<PaymentMethod, "qr">;
     ticketNumber: string;
     cashReceived?: number;
     change?: number;
-    paymentDetails: { method: "cash" | "card" | "transfer" | "qr"; amount: number; reference?: string }[];
-  }): boolean => {
-    if (!user) return false;
-    try {
-      createSale(
-        items,
-        selectedCustomer,
-        user.id,
-        paymentData.method,
-        paymentData.paymentDetails,
-        paymentData.cashReceived,
-        paymentData.change,
-        paymentData.ticketNumber
-      );
-      clearCart();
-      setSelectedCustomer(null);
-      setMobileView("products");
-      showToast("Venta guardada · inventario y auditoría actualizados", "success");
-      return true;
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "No se pudo completar la venta", "error");
-      return false;
-    }
+    paymentDetails: { method: "cash" | "card" | "transfer"; amount: number; reference?: string }[];
+  }): Promise<boolean> => {
+    if (!user) throw new Error("La sesión expiró. Inicia sesión nuevamente.");
+    await createSale(
+      items,
+      selectedCustomer,
+      user.id,
+      paymentData.method,
+      paymentData.paymentDetails,
+      paymentData.cashReceived,
+      paymentData.change,
+      paymentData.ticketNumber
+    );
+    clearCart();
+    setSelectedCustomer(null);
+    setMobileView("products");
+    showToast("Venta confirmada en PostgreSQL; inventario y caja actualizados de forma atómica", "success");
+    return true;
   };
 
   return (

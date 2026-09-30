@@ -8,6 +8,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "db:push": "drizzle-kit push",
+    "db:initialize": "node scripts/initialize-db.mjs",
     "db:studio": "drizzle-kit studio",
     "test:scanner": "node --experimental-strip-types --test tests/*.test.mjs",
     "catalog:import": "node scripts/catalog-import.mjs",

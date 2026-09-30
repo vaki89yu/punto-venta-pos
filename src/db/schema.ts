@@ -7,10 +7,12 @@ import {
   decimal,
   boolean,
   timestamp,
+  date,
   jsonb,
   pgEnum,
+  uniqueIndex,  index,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 // Enums
 export const userRoleEnum = pgEnum("user_role", ["admin", "manager", "cashier", "inventory"]);
@@ -20,6 +22,7 @@ export const inventoryMovementTypeEnum = pgEnum("inventory_movement_type", ["in"
 export const cashRegisterStatusEnum = pgEnum("cash_register_status", ["open", "closed"]);
 export const returnStatusEnum = pgEnum("return_status", ["pending", "approved", "rejected"]);
 export const themeEnum = pgEnum("theme", ["light", "dark", "system"]);
+export const purchaseOrderStatusEnum = pgEnum("purchase_order_status", ["pending", "ordered", "received", "cancelled"]);
 
 // Users Table
 export const users = pgTable("users", {
@@ -79,7 +82,7 @@ export const products = pgTable("products", {
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [uniqueIndex("products_barcode_unique").on(table.barcode)]);
 
 // Customers Table
 export const customers = pgTable("customers", {
@@ -160,7 +163,7 @@ export const cashRegisters = pgTable("cash_registers", {
   openedAt: timestamp("opened_at").defaultNow().notNull(),
   closedAt: timestamp("closed_at"),
   status: cashRegisterStatusEnum("status").notNull().default("open"),
-});
+}, (table) => [uniqueIndex("cash_registers_one_open_per_user").on(table.userId).where(sql`${table.status} = 'open'`)]);
 
 // Cash Movements Table
 export const cashMovements = pgTable("cash_movements", {
@@ -179,6 +182,7 @@ export const returns = pgTable("returns", {
   saleId: uuid("sale_id").notNull().references(() => sales.id),
   totalRefund: decimal("total_refund", { precision: 12, scale: 2 }).notNull(),
   reason: text("reason").notNull(),
+  refundMethod: varchar("refund_method", { length: 16 }).notNull().default("cash"),
   status: returnStatusEnum("status").notNull().default("pending"),
   processedBy: uuid("processed_by").references(() => users.id),
   processedAt: timestamp("processed_at"),
@@ -194,6 +198,7 @@ export const returnItems = pgTable("return_items", {
   quantity: decimal("quantity", { precision: 12, scale: 3 }).notNull(),
   price: decimal("price", { precision: 12, scale: 2 }).notNull(),
   refundAmount: decimal("refund_amount", { precision: 12, scale: 2 }).notNull(),
+  lotAllocations: jsonb("lot_allocations").$type<{ lotId: string; lotCode: string; quantity: number }[]>(),
 });
 
 // Store Settings Table
@@ -222,11 +227,12 @@ export const inventoryLots = pgTable("inventory_lots", {
   lotCode: varchar("lot_code", { length: 100 }).notNull(),
   receivedQuantity: decimal("received_quantity", { precision: 12, scale: 3 }).notNull(),
   remainingQuantity: decimal("remaining_quantity", { precision: 12, scale: 3 }).notNull(),
-  expiresAt: timestamp("expires_at"),
+  expiresAt: date("expires_at", { mode: "string" }),
   unitCost: decimal("unit_cost", { precision: 12, scale: 2 }).notNull(),
+  source: varchar("source", { length: 20 }).notNull().default("opening"),
   receivedBy: uuid("received_by").references(() => users.id),
   receivedAt: timestamp("received_at").defaultNow().notNull(),
-});
+}, (table) => [uniqueIndex("inventory_lots_product_code_unique").on(table.productId, table.lotCode)]);
 
 // Local audit history can later be migrated into this append-only server table.
 export const auditEvents = pgTable("audit_events", {
@@ -254,6 +260,29 @@ export const invoiceRequests = pgTable("invoice_requests", {
   status: varchar("status", { length: 32 }).notNull().default("pending_pac"),
   requestedBy: varchar("requested_by", { length: 255 }).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const purchaseOrders = pgTable("purchase_orders", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderNumber: varchar("order_number", { length: 50 }).notNull().unique(),
+  supplierId: uuid("supplier_id").notNull().references(() => suppliers.id),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  status: purchaseOrderStatusEnum("status").notNull().default("pending"),
+  total: decimal("total", { precision: 12, scale: 2 }).notNull(),
+  expectedDate: date("expected_date", { mode: "string" }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  receivedAt: timestamp("received_at"),
+});
+
+export const purchaseOrderItems = pgTable("purchase_order_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  purchaseOrderId: uuid("purchase_order_id").notNull().references(() => purchaseOrders.id, { onDelete: "cascade" }),
+  productId: uuid("product_id").notNull().references(() => products.id),
+  quantity: decimal("quantity", { precision: 12, scale: 3 }).notNull(),
+  receivedQuantity: decimal("received_quantity", { precision: 12, scale: 3 }).notNull().default("0"),
+  unitCost: decimal("unit_cost", { precision: 12, scale: 2 }).notNull(),
+  total: decimal("total", { precision: 12, scale: 2 }).notNull(),
 });
 
 // Relations

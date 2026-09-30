@@ -14,7 +14,7 @@ interface QuickProductModalProps {
   isOpen: boolean;
   barcode: string;
   onClose: () => void;
-  onSave: (product: Omit<Product, "id" | "createdAt" | "updatedAt">, addToCart: boolean) => void;
+  onSave: (product: Omit<Product, "id" | "createdAt" | "updatedAt">, addToCart: boolean) => void | Promise<void>;
   onScanAgain?: () => void;
 }
 
@@ -41,6 +41,7 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
   }, []);
 
   const [existing, setExisting] = useState<Product | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -77,18 +78,20 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
     brand: form.brand || undefined,
     purchasePrice: parseFloat(form.purchasePrice) || 0,
     salePrice: parseFloat(form.salePrice) || 0,
-    stock: parseInt(form.stock) || 0,
-    minStock: parseInt(form.minStock) || 5,
-    unit: "pieza",
+    stock: parseFloat(form.stock) || 0,
+    minStock: parseFloat(form.minStock) || 5,
+    unit: existing?.unit || "pieza",
     tax: 16,
     isActive: true,
   });
 
   const isValid = form.name.trim() && form.salePrice && form.stock;
 
-  const handleSubmit = (addToCart: boolean) => {
-    if (!isValid) return;
-    onSave(buildProduct(), addToCart);
+  const handleSubmit = async (addToCart: boolean) => {
+    if (!isValid || isSaving) return;
+    setIsSaving(true);
+    try { await onSave(buildProduct(), addToCart); }
+    finally { setIsSaving(false); }
   };
 
   const suggestPrice = (multiplier: number) => {
@@ -257,12 +260,14 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
             <Input
               label={existing ? "Cantidad a agregar *" : "Stock inicial *"}
               type="number"
+              min="0.001"
+              step={existing && ["kg", "g", "litro", "ml"].includes(existing.unit.toLowerCase()) ? "0.001" : "1"}
               placeholder="0"
               value={form.stock}
               onChange={(e) => setForm({ ...form, stock: e.target.value })}
               helperText={
                 existing && form.stock
-                  ? `Quedará en ${existing.stock + (parseInt(form.stock) || 0)} unidades`
+                  ? `Quedará en ${(existing.stock + (parseFloat(form.stock) || 0)).toFixed(3)} ${existing.unit}`
                   : undefined
               }
             />
@@ -281,7 +286,8 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
             fullWidth
             size="lg"
             onClick={() => handleSubmit(true)}
-            disabled={!isValid}
+            disabled={!isValid || isSaving}
+            isLoading={isSaving}
             leftIcon={<ShoppingCart className="w-5 h-5" />}
           >
             Guardar y agregar al carrito
@@ -290,7 +296,8 @@ export function QuickProductModal({ isOpen, barcode, onClose, onSave, onScanAgai
             <Button
               variant="success"
               onClick={() => handleSubmit(false)}
-              disabled={!isValid}
+              disabled={!isValid || isSaving}
+              isLoading={isSaving}
               leftIcon={<Check className="w-4 h-4" />}
             >
               Solo guardar
